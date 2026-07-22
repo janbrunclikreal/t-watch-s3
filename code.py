@@ -22,11 +22,14 @@ from axp2101 import AXP2101
 from adafruit_drv2605 import DRV2605, Effect
 import bma423
 
-# --- BLE ANCS IMPORTY ---
+# --- BLE ANCS IMPORTY & INICIALIZACE ---
+radio = None
+ble_dostupne = False
 try:
     import adafruit_ble
     from adafruit_ble.advertising.standard import SolicitServicesAdvertisement
     import adafruit_ble_apple_notification_center as ancs
+    radio = adafruit_ble.BLERadio()
     ble_dostupne = True
 except Exception:
     ble_dostupne = False
@@ -264,7 +267,7 @@ async def wifi_cas_sync_task():
             ntp_label.text = "N: OK"
             ntp_label.color = 0x03F830
         except (ValueError, OSError) as e:
-            log(f"[NTP-Sync-WARN] Neuplný NTP paket: {e}")
+            log(f"[NTP-Sync-WARN] Neúplný NTP paket: {e}")
             ntp_label.text = "N: Err"
             ntp_label.color = 0xFF0000
     except Exception as e:
@@ -282,13 +285,12 @@ async def wifi_cas_sync_task():
 
 async def ble_ancs_task():
     """Robustní BLE ANCS task pro příchozí notifikace z iOS/Androidu"""
-    global posledni_aktivita, displej_vzhuru
-    if not ble_dostupne:
+    global posledni_aktivita, displej_vzhuru, radio
+    if not ble_dostupne or radio is None:
         log("[BLE-WARN] Knihovny adafruit_ble nebo ANCS chybí!")
         return
 
     log("[Task] Nativní BLE ANCS Notifikační task spuštěn.")
-    radio = adafruit_ble.BLERadio()
     a = SolicitServicesAdvertisement()
     a.solicited_services.append(ancs.AppleNotificationCenterService)
 
@@ -354,8 +356,7 @@ async def ble_ancs_task():
                                     except Exception:
                                         pass
 
-                    except (_bleio.BluetoothError, AttributeError, KeyError) as err:
-                        # Zde čistě zachytáváme známou chybu 418 a počkáme na ustálení streamu
+                    except (_bleio.BluetoothError, AttributeError, KeyError):
                         await asyncio.sleep(1.0)
                     except Exception as e:
                         log(f"[ANCS-ERR] {e}")
@@ -640,22 +641,21 @@ finally:
     
     # 1. BEZPEČNÉ ODPOJENÍ A RESET BLE
     try:
-        if 'ble' in globals() and ble is not None:
+        if radio is not None:
             # Zastavíme inzerci (pokud běží)
-            if ble.advertising:
-                ble.stop_advertising()
+            if radio.advertising:
+                radio.stop_advertising()
                 log("[BLE] Advertisment zastaven.")
             
             # Odpojíme aktivní spojení
-            if ble.connected:
-                for conn in ble.connections:
+            if radio.connected:
+                for conn in radio.connections:
                     log("[BLE] Posílám požadavek na odpojení telefonu...")
                     conn.disconnect()
                 time.sleep(0.2)
             
             # HARDWAROVÝ RESET BLE STACKU
-            # Vypnutím adaptéru vynutíme okamžitý Link Loss na straně iPhonu,
-            # takže telefon nezůstane viset vGhost stavu "Připojeno".
+            # Vypnutím adaptéru vynutíme okamžitý Link Loss na straně iPhonu.
             _bleio.adapter.enabled = False
             time.sleep(0.1)
             _bleio.adapter.enabled = True
