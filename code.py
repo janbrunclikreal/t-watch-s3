@@ -628,15 +628,60 @@ async def main():
 
 try:
     asyncio.run(main())
+
 except KeyboardInterrupt:
     log("[REPL] Přerušeno uživatelem.")
+
 except Exception as e:
     log(f"[CRASH] Neošetřená chyba: {e}")
+
 finally:
+    log("[SYSTEM] Zahajuji bezpečný úklid...")
+    
+    # 1. BEZPEČNÉ ODPOJENÍ A RESET BLE
+    try:
+        if 'ble' in globals() and ble is not None:
+            # Zastavíme inzerci (pokud běží)
+            if ble.advertising:
+                ble.stop_advertising()
+                log("[BLE] Advertisment zastaven.")
+            
+            # Odpojíme aktivní spojení
+            if ble.connected:
+                for conn in ble.connections:
+                    log("[BLE] Posílám požadavek na odpojení telefonu...")
+                    conn.disconnect()
+                time.sleep(0.2)
+            
+            # HARDWAROVÝ RESET BLE STACKU
+            # Vypnutím adaptéru vynutíme okamžitý Link Loss na straně iPhonu,
+            # takže telefon nezůstane viset vGhost stavu "Připojeno".
+            _bleio.adapter.enabled = False
+            time.sleep(0.1)
+            _bleio.adapter.enabled = True
+            log("[BLE] BLE adaptér resetován (uvolněno z iPhonu).")
+
+    except Exception as e:
+        log(f"[BLE] Chyba při úklidu BLE: {e}")
+
+    # 2. ÚKLID HARDWARU A DISPLEJE
     try:
         nastav_jas(100)
         display.root_group = displayio.CIRCUITPYTHON_TERMINAL
-        i2c.unlock()
-        asyncio.new_event_loop()
-    except Exception:
-        pass
+        # Bezpečné odemčení I2C sběrnice
+        try:
+            i2c.unlock()
+            log("[I2C] Sběrnice odemčena.")
+        except Exception:
+            pass  # Pokud zamčená nebyla, výjimku ignorujeme
+            
+    except Exception as e:
+        log(f"[HW] Chyba při úklidu HW: {e}")
+
+    # 3. ZASTAVENÍ ASYNCIO LOOPY
+    try:
+        loop = asyncio.get_event_loop()
+        loop.stop()
+        log("[ASYNC] Event loop zastavena.")
+    except Exception as e:
+        log(f"[ASYNC] Úklid async selhal: {e}")
