@@ -13,6 +13,8 @@ import adafruit_ntp
 import microcontroller
 import supervisor
 import _bleio
+import sys
+sys.path.append("/modules")
 
 from adafruit_display_text import label
 from adafruit_pcf8563.pcf8563 import PCF8563
