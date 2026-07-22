@@ -1,3 +1,4 @@
+import os
 import time
 import board
 import displayio
@@ -81,9 +82,9 @@ except Exception as e:
     log(f"[POWER] Nelze změnit frekvenci CPU: {e}")
 
 # --- KONFIGURACE WI-FI & ČASU ---
-WIFI_SSID = "TVOJE_WIFI"
-WIFI_PASS = "TVOJE_HESLO"
-CASOVE_PASMO_HODIN = 2
+WIFI_SSID = os.getenv("CIRCUITPYTHON_WIFI_SSID")
+WIFI_PASS = os.getenv("CIRCUITPYTHON_WIFI_PASSWORD")
+CASOVE_PASMO_HODIN = int(os.getenv("TIMEZONE_OFFSET", "2"))
 DB_FILE = "/kroky_db.json"
 
 # --- GLOBÁLNÍ STAVY A PROMĚNNÉ ---
