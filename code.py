@@ -26,9 +26,6 @@ import bma423
 # --- BLE ANCS IMPORTY & INICIALIZACE ---
 radio = None
 ble_dostupne = False
-ble_adv_start_time = time.monotonic()
-ble_pause_advertising = False
-
 try:
     import adafruit_ble
     from adafruit_ble.advertising.standard import SolicitServicesAdvertisement
@@ -59,7 +56,6 @@ try:
                 pass
 except Exception as e:
     print(f"[PMU-INIT-ERR] {e}")
-
 time.sleep(0.1)
 
 # 2. Inicializace RTC hodin
@@ -69,7 +65,7 @@ try:
 except Exception as e:
     print(f"[RTC-INIT-ERR] {e}")
 
-# --- POMOCNÁ FUNKCE PRO LOGOVÁNÍ A SPRÁVU PAMĚTI ---
+# --- POMOCNÁ FUNKCE PRO LOGOVÁNÍ S MILISEKUNDAMI ---
 def log(zprava):
     """Vytiskne zprávu s přesným časovým razítkem [HH:MM:SS.mmm]"""
     try:
@@ -83,30 +79,15 @@ def log(zprava):
         cas_str = f"{s}s.{ms:03d}"
     print(f"[{cas_str}] {zprava}")
 
-def memory_cleanup(reason=""):
-    """Event-driven uvolnění paměti pro zamezení micro-stutteringu"""
-    volno_pred = gc.mem_free()
-    gc.collect()
-    volno_po = gc.mem_free()
-    duvod_str = f" ({reason})" if reason else ""
-    log(f"[MEM]{duvod_str} Uvolněno: {(volno_po - volno_pred)//1024} kB | Volno: {volno_po//1024} kB")
-
-def nastav_cpu_mhz(mhz):
-    """Změní frekvenci CPU za běhu (např. 80, 160, 240 MHz)"""
+# --- DYNAMICKÁ ZMĚNA FREKVENCE CPU ---
+def zmen_frekvenci_cpu(freq_hz):
     try:
-        f_hz = mhz * 1000000
-        if microcontroller.cpu.frequency != f_hz:
-            microcontroller.cpu.frequency = f_hz
-            log(f"[POWER] CPU přepnuto na {mhz} MHz")
+        microcontroller.cpu.frequency = freq_hz
+        log(f"[POWER] CPU nastaveno na {freq_hz // 1000000} MHz.")
     except Exception as e:
-        log(f"[POWER-ERR] Nelze změnit takt CPU: {e}")
+        log(f"[POWER-ERR] Nelze změnit frekvenci CPU: {e}")
 
-# --- OPTIMALIZACE SPOTŘEBY ---
-try:
-    microcontroller.cpu.frequency = 80000000
-    log("[POWER] CPU podtaktováno na 80 MHz.")
-except Exception as e:
-    log(f"[POWER] Nelze změnit frekvenci CPU: {e}")
+zmen_frekvenci_cpu(80000000)
 
 # --- KONFIGURACE WI-FI & ČASU ---
 WIFI_SSID = os.getenv("CIRCUITPYTHON_WIFI_SSID")
@@ -114,7 +95,7 @@ WIFI_PASS = os.getenv("CIRCUITPYTHON_WIFI_PASSWORD")
 CASOVE_PASMO_HODIN = int(os.getenv("TIMEZONE_OFFSET", "2"))
 DB_FILE = "/kroky_db.json"
 
-# --- GLOBÁLNÍ STAVY A PROMĚNNÉ ---
+# --- GLOBÁLNÍ STAVY a PROMĚNNÉ ---
 posledni_aktivita = time.monotonic()
 displej_vzhuru = True
 TIMEOUT_SPANKU_SEC = 10
@@ -122,6 +103,8 @@ wifi_sync_probha = False
 cas_synchronizovan = False
 kroky_dnes = 0
 posledni_datum_str = ""
+ble_adv_start_time = time.monotonic()
+ble_pause_advertising = False
 
 # --- HAPTIKA DRV2605 ---
 try:
@@ -137,8 +120,8 @@ main_group = displayio.Group()
 
 datum_label = label.Label(terminalio.FONT, text="01.01.", color=0xFFFFFF, x=5, y=15)
 status_label = label.Label(terminalio.FONT, text="W:off B:off", color=0x444444, x=55, y=15)
-bat_label = label.Label(terminalio.FONT, text="B:--%", color=0xFF9600, x=155, y=15)
-cpu_label = label.Label(terminalio.FONT, text="C:--%", color=0x00D0FF, x=205, y=15)
+bat_label = label.Label(terminalio.FONT, text="B:--% ", color=0xFF9600, x=160, y=15)
+cpu_label = label.Label(terminalio.FONT, text="C:00%", color=0x00D0FF, x=205, y=15)
 cas_label = label.Label(terminalio.FONT, text="00:00:00", color=0x03F830, scale=5, x=2, y=50)
 ntp_label = label.Label(terminalio.FONT, text="N: Off", color=0xFF9600, x=5, y=230)
 kroky_label = label.Label(terminalio.FONT, text="K: 0", color=0xFFD700, scale=1, x=60, y=230)
@@ -155,7 +138,6 @@ main_group.append(kroky_label)
 main_group.append(ram_label)
 main_group.append(mv_label)
 
-# --- APLE/MODULY GUI ---
 tc = TouchController()
 menu_app = AppMenu()
 moblin_app = AppMoblin()
@@ -167,29 +149,44 @@ STATE_MENU = "MENU"
 STATE_MOBLIN = "MOBLIN"
 STATE_HWTEST = "HWTEST"
 STATE_NOTIF = "NOTIF"
-
 current_state = STATE_WATCHFACE
+
 display.root_group = main_group
 
 def nastav_jas(procenta):
     display.brightness = procenta / 100
 
+def memory_cleanup(duvod=""):
+    gc.collect()
+    if duvod:
+        log(f"[MEM] ({duvod}) Uvolněno | Volno: {gc.mem_free() // 1024} kB")
+    else:
+        log(f"[MEM] Uvolněno | Volno: {gc.mem_free() // 1024} kB")
+
+def obnov_ble_inzerci():
+    global ble_adv_start_time, ble_pause_advertising
+    ble_pause_advertising = False
+    ble_adv_start_time = time.monotonic()
+
 def probud_displej():
     global displej_vzhuru, posledni_aktivita
     posledni_aktivita = time.monotonic()
-    
     obnov_ble_inzerci()
-    
     if not displej_vzhuru:
         for jas in range(0, 91, 20):
             nastav_jas(jas)
         displej_vzhuru = True
 
-# --- DATABÁZE KROKŮ ---
+# --- DATABÁZE KROKŮ (OCHRANA PROTI PŘETRÁVÁNÍ SOUBORU) ---
 def nacti_databazi_kroku():
     try:
         with open(DB_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            # Omezíme historii na 90 dní, aby JSON nekonečně nerostl v RAM
+            if isinstance(data, dict) and len(data) > 90:
+                sorted_keys = sorted(data.keys())
+                data = {k: data[k] for k in sorted_keys[-90:]}
+            return data
     except (OSError, ValueError):
         return {}
 
@@ -202,24 +199,16 @@ def uloz_kroky_do_db(datum_str, pocet_kroku):
             f.flush()
         log(f"[DB] Uloženo na Flash: {datum_str} -> {pocet_kroku} kroků")
     except OSError as e:
-        if e.errno == 38:
+        if getattr(e, "errno", None) == 38:
             log("[DB] Připojeno k PC (Read-Only). Zápis přeskakuji.")
         else:
             log(f"[DB-ERR] Chyba zápisu: {e}")
 
-def bma423_init():
-    global bma_sensor
-    try:
-        bma_sensor = bma423.BMA423(i2c)
-        log("[BMA423] Akcelerometr v režimu G-Force inicializován.")
-    except Exception as e:
-        log(f"[BMA423-ERR] {e}")
-
-# --- AKCELEROMETR BMA423 & KROKOMĚR ---
+# --- AKCELEROMETR BMA423 ---
 bma_sensor = None
 posledni_magnitude = 1.0
 posledni_krok_cas = 0
-posledni_milnik_kroku = 0  # Sleduje tisícovky kroků (1000, 2000, 3000...)
+posledni_milnik_kroku = 0
 
 def bma423_init():
     global bma_sensor
@@ -234,49 +223,37 @@ def bma423_merit_kroky():
     if bma_sensor:
         try:
             x, y, z = bma_sensor.acceleration
-            magnitude = math.sqrt(x*x + y*y + z*z)
+            acc_sum = x*x + y*y + z*z
+            magnitude = math.sqrt(acc_sum) if acc_sum > 0 else 0.0
             nyni = time.monotonic()
-
-            # Detekce kroku (překročení prahu G-Force)
             if magnitude > 1.18 and posledni_magnitude <= 1.18:
                 if (nyni - posledni_krok_cas) > 0.33:
                     kroky_dnes += 1
                     posledni_krok_cas = nyni
-
-                    # HAPTIKÝ MILNÍK: Zavibruje pouze při dosažení každých 1 000 kroků
-                    aktualni_milnik = kroky_dnes // 1000
-                    if aktualni_milnik > posledni_milnik_kroku and aktualni_milnik > 0:
-                        posledni_milnik_kroku = aktualni_milnik
-                        log(f"[KROKY] Dosaženo milníku: {kroky_dnes} kroků! Vibruji...")
+                    
+                    # Milník každých 1000 kroků
+                    aktualni_tisic = kroky_dnes // 1000
+                    if aktualni_tisic > posledni_milnik_kroku:
+                        posledni_milnik_kroku = aktualni_tisic
                         try:
-                            drv.sequence[0] = Effect(47) # Dlouhý oslavný pulz
+                            drv.sequence[0] = Effect(14)
                             drv.play()
                         except Exception:
                             pass
-
             posledni_magnitude = magnitude
         except Exception:
             pass
     return kroky_dnes
 
-# Inicializace senzoru při startu
 bma423_init()
 
-def obnov_ble_inzerci():
-    """Resetuje BLE časovač a probudí rádio ze 30s spánku"""
-    global ble_adv_start_time, ble_pause_advertising
-    ble_adv_start_time = time.monotonic()
-    if ble_pause_advertising:
-        ble_pause_advertising = False
-        log("[BLE] Obnovuji inzerci na základě interakce...")
-        
 # =========================================================================
 # ASYNCHRONNÍ TASKY
 # =========================================================================
 
 async def wifi_cas_sync_task():
     """NTP synchronizace času"""
-    global cas_synchronizovan, wifi_sync_probha, posledni_aktivita
+    global cas_synchronizovan, wifi_sync_probha
     try:
         if rtc_hw and rtc_hw.datetime.tm_year >= 2026:
             t_RTC = rtc_hw.datetime
@@ -324,9 +301,8 @@ async def wifi_cas_sync_task():
     wifi_sync_probha = False
     memory_cleanup("Po Wi-Fi sync")
 
-
 async def ble_ancs_task():
-    """Robustní BLE ANCS task s poctivým 30s timeoutem spánku"""
+    """Robustní BLE ANCS task s časovým zámkem na paměť notifikací"""
     global posledni_aktivita, displej_vzhuru, radio, ble_adv_start_time, ble_pause_advertising
     if not ble_dostupne or radio is None:
         log("[BLE-WARN] Knihovny adafruit_ble nebo ANCS chybí!")
@@ -336,46 +312,41 @@ async def ble_ancs_task():
     a = SolicitServicesAdvertisement()
     a.solicited_services.append(ancs.AppleNotificationCenterService)
 
+    posledni_zname_notifikace = set()
+
     while True:
         try:
-            # 1. Pokud rádio pauzuje po timeoutu, spíme a čekáme na korunku/dotyk
-            if ble_pause_advertising:
-                if radio.advertising:
-                    radio.stop_advertising()
+            if ble_pause_advertising and not radio.connected:
                 status_label.text = "W:off B:sleep"
                 await asyncio.sleep(1.0)
                 continue
 
-            # 2. Spuštění inzerce (pokud neběží)
-            if not radio.advertising and not radio.connected:
+            if not radio.connected and not radio.advertising:
                 log("[BLE] Spouštím inzerci pro ANCS...")
                 status_label.text = "W:off B:adv-iOS"
                 radio.start_advertising(a)
                 ble_adv_start_time = time.monotonic()
 
-            # 3. Čekání na připojení s 30s limitovačem
             while not radio.connected:
-                # Pokud vypršel limit 30 s neaktivity
                 if (time.monotonic() - ble_adv_start_time) > 30:
                     log("[BLE-POWER] Timeout inzerce (30 s) vypršel! Vypínám BLE rádio...")
                     if radio.advertising:
                         radio.stop_advertising()
-                    ble_pause_advertising = True  # Přepneme do trvalého spánku
+                    ble_pause_advertising = True
+                    status_label.text = "W:off B:sleep"
                     break
-
                 await asyncio.sleep(0.5)
 
-            # 4. Obsluha aktivního spojení po připojení iPhonu
             if radio.connected:
-                ble_pause_advertising = False
                 log("[BLE] Telefon připojen!")
                 status_label.text = "W:off B:iOS-OK"
-                radio.stop_advertising()
+                if radio.advertising:
+                    radio.stop_advertising()
 
                 for connection in list(radio.connections):
                     if ancs.AppleNotificationCenterService not in connection:
                         continue
-                    
+
                     try:
                         if not connection.paired:
                             log("[BLE] Dojednávám šifrování relace...")
@@ -383,8 +354,6 @@ async def ble_ancs_task():
                             log("[BLE] Spárováno!")
                     except Exception as e:
                         log(f"[BLE-PAIR-WARN] {e}")
-
-                    posledni_zname_notifikace = set()
 
                     while connection.connected:
                         try:
@@ -394,19 +363,25 @@ async def ble_ancs_task():
                                 for notif_id in active_notifs:
                                     if notif_id not in posledni_zname_notifikace:
                                         posledni_zname_notifikace.add(notif_id)
+                                        # OPRAVA MEMORY LEAKU: Omezení velikosti množiny
+                                        if len(posledni_zname_notifikace) > 50:
+                                            posledni_zname_notifikace.clear()
+                                            posledni_zname_notifikace.add(notif_id)
+
                                         notif = active_notifs[notif_id]
                                         app_id = notif.app_id or "Aplikace"
                                         title = notif.title or ""
                                         msg = notif.message or ""
                                         log(f"[ANCS-NOTIF] {app_id} | {title}: {msg}")
-                                        
+
                                         try:
                                             drv.sequence[0] = Effect(14)
                                             drv.play()
                                         except Exception:
                                             pass
-                                            
+
                                         probud_displej()
+
                                         try:
                                             notif_app.add_notification(app_id, f"{title}: {msg}")
                                         except Exception:
@@ -416,51 +391,48 @@ async def ble_ancs_task():
                         except Exception as e:
                             log(f"[ANCS-ERR] {e}")
                             await asyncio.sleep(1.0)
-                            
                         await asyncio.sleep(0.3)
 
                 log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
                 status_label.text = "W:off B:off"
                 memory_cleanup("Po odpojení BLE")
-                ble_adv_start_time = time.monotonic()
+                obnov_ble_inzerci()
                 await asyncio.sleep(1)
 
         except Exception as e:
             log(f"[BLE-GLOBAL-ERR] {e}")
             await asyncio.sleep(2)
 
-
 async def hlidac_korunky_task():
-    """Obsluha HW tlačítka / korunky přes PMU AXP2101"""
+    """Obsluha HW tlačítka / korunky přes PMU AXP2101 s bezpečným zamknutím I2C"""
     global posledni_aktivita, displej_vzhuru, current_state
     log("[Task] Hlídač korunky spuštěn.")
     pmu_address = 0x34
     reg_irq_status = 0x49
 
+    # OPRAVA ZAMČENÍ I2C: Použití try...finally pro bezpečné odemčení za všech okolností
     def direct_read_reg(reg):
         try:
             if i2c.try_lock():
-                buffer = bytearray(1)
-                i2c.writeto_then_readfrom(pmu_address, bytes([reg]), buffer)
-                i2c.unlock()
-                return buffer[0]
+                try:
+                    buffer = bytearray(1)
+                    i2c.writeto_then_readfrom(pmu_address, bytes([reg]), buffer)
+                    return buffer[0]
+                finally:
+                    i2c.unlock()
         except Exception:
-            try:
-                i2c.unlock()
-            except Exception:
-                pass
+            pass
         return 0
 
     def direct_write_reg(reg, val):
         try:
             if i2c.try_lock():
-                i2c.writeto(pmu_address, bytes([reg, val]))
-                i2c.unlock()
+                try:
+                    i2c.writeto(pmu_address, bytes([reg, val]))
+                finally:
+                    i2c.unlock()
         except Exception:
-            try:
-                i2c.unlock()
-            except Exception:
-                pass
+            pass
 
     direct_write_reg(reg_irq_status, direct_read_reg(reg_irq_status))
 
@@ -472,7 +444,7 @@ async def hlidac_korunky_task():
                 if irq_status in (2, 3):
                     log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
                     posledni_aktivita = time.monotonic()
-                    ble_adv_start_time = time.monotonic()
+                    obnov_ble_inzerci()
                     if not displej_vzhuru:
                         probud_displej()
                         try:
@@ -481,9 +453,9 @@ async def hlidac_korunky_task():
                             pass
                     else:
                         if current_state != STATE_WATCHFACE:
-                            nastav_cpu_mhz(80)
                             current_state = STATE_WATCHFACE
                             display.root_group = main_group
+                            zmen_frekvenci_cpu(80000000)
                             memory_cleanup("Návrat na Watchface")
                             log("[AKCE] Návrat na Ciferník")
                         else:
@@ -493,11 +465,9 @@ async def hlidac_korunky_task():
                                 await asyncio.sleep(0.01)
                             displej_vzhuru = False
                     await asyncio.sleep(0.5)
-        except Exception:
-            pass
-
+        except Exception as e:
+            log(f"[CROWN-ERR] {e}")
         await asyncio.sleep(0.05 if displej_vzhuru else 0.2)
-
 
 async def sprava_napajeni_task():
     """Automatické zhasínání displeje při neaktivitě"""
@@ -508,7 +478,6 @@ async def sprava_napajeni_task():
             now = time.monotonic()
             rozdil = now - posledni_aktivita
             usb_pripojeno = supervisor.runtime.usb_connected
-
             if displej_vzhuru and not wifi_sync_probha and not usb_pripojeno:
                 if rozdil > TIMEOUT_SPANKU_SEC:
                     log(f"[POWER] Timeout vypršel ({rozdil:.1f}s). Uspávám displej...")
@@ -516,14 +485,13 @@ async def sprava_napajeni_task():
                         nastav_jas(jas)
                         await asyncio.sleep(0.02)
                     displej_vzhuru = False
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"[POWER-TASK-ERR] {e}")
         await asyncio.sleep(0.5)
-
 
 async def pocitadlo_kroku_task():
     """Krokoměr s udržením denní databáze"""
-    global kroky_dnes, posledni_datum_str
+    global kroky_dnes, posledni_datum_str, posledni_milnik_kroku
     log("[Task] Počítadlo kroků spuštěno.")
     try:
         if rtc_hw:
@@ -531,6 +499,7 @@ async def pocitadlo_kroku_task():
             posledni_datum_str = f"{t.tm_year:04d}-{t.tm_mon:02d}-{t.tm_mday:02d}"
             db = nacti_databazi_kroku()
             kroky_dnes = db.get(posledni_datum_str, 0)
+            posledni_milnik_kroku = kroky_dnes // 1000
     except Exception:
         pass
 
@@ -545,10 +514,12 @@ async def pocitadlo_kroku_task():
                     uloz_kroky_do_db(posledni_datum_str, kroky_dnes)
                     posledni_datum_str = aktualni_datum_str
                     kroky_dnes = 0
+                    posledni_milnik_kroku = 0
 
             bma423_merit_kroky()
+
             if displej_vzhuru:
-                kroky_label.text = f"K: {kroky_dnes}"
+                kroky_label.text = f"K: {min(kroky_dnes, 999999)}"
 
             ulozeni_pocitadlo += 1
             if ulozeni_pocitadlo >= 1500:
@@ -557,18 +528,26 @@ async def pocitadlo_kroku_task():
                     uloz_kroky_do_db(posledni_datum_str, kroky_dnes)
         except Exception as e:
             log(f"[KROKY-ERR] {e}")
-
         await asyncio.sleep(0.2)
 
 async def graficka_smycka_hodin_task():
-    """Obnovování textů ciferníku, statusů a výpočet vytížení CPU"""
+    """Obnovování textů ciferníku a diagnostiky CPU"""
     log("[Task] Grafická smyčka hodin spuštěna.")
     posledni_sekunda = -1
-    posledni_mereni_cas = time.monotonic()
+    posledni_cas_smycky = time.monotonic()
 
     while True:
-        t_start = time.monotonic()
-        
+        teraz = time.monotonic()
+        planovany_interval = 0.2
+        skutocny_interval = teraz - posledni_cas_smycky
+        posledni_cas_smycky = teraz
+
+        if skutocny_interval > 0:
+            vyuziti = int((1.0 - (planovany_interval / max(planovany_interval, skutocny_interval))) * 100)
+            vyuziti = max(0, min(99, vyuziti))
+        else:
+            vyuziti = 0
+
         if displej_vzhuru and rtc_hw:
             try:
                 t = rtc_hw.datetime
@@ -577,35 +556,21 @@ async def graficka_smycka_hodin_task():
                         posledni_sekunda = t.tm_sec
                         cas_label.text = f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}"
                         datum_label.text = f"{t.tm_mday:02d}.{t.tm_mon:02d}."
+                        cpu_label.text = f"C:{vyuziti:02d}%"
 
-                        # Aktualizace RAM každých 5 sekund
-                        if t.tm_sec % 5 == 0:
-                            ram_label.text = f"R: {gc.mem_free() // 1024}k"
+                    if t.tm_sec % 5 == 0:
+                        ram_label.text = f"R: {gc.mem_free() // 1024}k"
 
-                        # Aktualizace Baterie a Vytížení CPU každou sekundu
-                        dt = t_start - posledni_mereni_cas
-                        posledni_mereni_cas = t_start
-                        
-                        # Výpočet CPU: Očekávaný interval vs. reálný průběh smyčky
-                        # 0.2s je cílový interval spánku. Pokud smyčka trvala déle, CPU pracovalo.
-                        if dt > 0:
-                            pouzity_cas = max(0, dt - 0.2)
-                            vyuziti_cpu = min(100, int((pouzity_cas / dt) * 100))
-                            
-                            # Základní korekce pro vizualizaci klidového stavu (Idle baseline ~5-15%)
-                            vyuziti_cpu = max(5, vyuziti_cpu) 
-                            cpu_label.text = f"C:{vyuziti_cpu:02d}%"
-
-                        if t.tm_sec % 10 == 0:
-                            try:
-                                if pmu.is_battery_connected:
-                                    bat_label.text = f"B:{pmu.battery_level}%"
-                                    mv_label.text = f"{pmu.battery_voltage} mV"
-                                else:
-                                    bat_label.text = "B: USB"
-                                    mv_label.text = "USB PWR"
-                            except Exception:
-                                pass
+                    if t.tm_sec % 10 == 0:
+                        try:
+                            if pmu.is_battery_connected:
+                                bat_label.text = f"B:{pmu.battery_level}%"
+                                mv_label.text = f"{pmu.battery_voltage} mV"
+                            else:
+                                bat_label.text = "B: USB"
+                                mv_label.text = "USB PWR"
+                        except Exception:
+                            pass
 
                 elif current_state == STATE_HWTEST:
                     cas_sec = f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}"
@@ -620,17 +585,15 @@ async def graficka_smycka_hodin_task():
                     except Exception:
                         b_str, mv_str = "Neznámo", "---- mV"
 
-                    hwtest_app.update_data(b_str, mv_str, cas_sec, volna_ram, vyuziti_cpu)
-
+                    hwtest_app.update_data(b_str, mv_str, cas_sec, volna_ram, vyuziti)
             except Exception as e:
                 log(f"[GUI-ERR] {e}")
-                
             await asyncio.sleep(0.2)
         else:
             await asyncio.sleep(0.5)
 
 async def dotyk_a_gui_task():
-    """Obsluha dotykové vrstvy a přepínání obrazovek"""
+    """Obsluha dotykové vrstvy a řízení frekvence CPU"""
     global current_state, posledni_aktivita, displej_vzhuru
     log("[Task] Dotyková obsluha spuštěna.")
     while True:
@@ -639,14 +602,15 @@ async def dotyk_a_gui_task():
             if ev:
                 if not displej_vzhuru:
                     probud_displej()
-
                 posledni_aktivita = time.monotonic()
+                obnov_ble_inzerci()
                 ev_type, x, y = ev[0], ev[1], ev[2]
 
                 if current_state == STATE_WATCHFACE:
                     if ev_type in ("TAP", "SWIPE_DOWN", "SWIPE_UP"):
                         log("[TOUCH] Otevírám MENU")
                         current_state = STATE_MENU
+                        zmen_frekvenci_cpu(160000000)
                         display.root_group = menu_app.group
 
                 elif current_state == STATE_MENU:
@@ -655,19 +619,19 @@ async def dotyk_a_gui_task():
                         log(f"[MENU-TAP] Vybrána akce: {akce}")
                         if akce == "MOBLIN":
                             current_state = STATE_MOBLIN
-                            nastav_cpu_mhz(240)
+                            zmen_frekvenci_cpu(240000000)
                             display.root_group = moblin_app.group
                         elif akce == "NOTIF":
-                            nastav_cpu_mhz(160)
                             current_state = STATE_NOTIF
+                            zmen_frekvenci_cpu(160000000)
                             display.root_group = notif_app.group
                         elif akce == "HWTEST":
-                            nastav_cpu_mhz(80)
                             current_state = STATE_HWTEST
+                            zmen_frekvenci_cpu(80000000)
                             display.root_group = hwtest_app.group
                         elif akce == "BACK":
-                            nastav_cpu_mhz(80)
                             current_state = STATE_WATCHFACE
+                            zmen_frekvenci_cpu(80000000)
                             display.root_group = main_group
                             memory_cleanup("Zavření menu")
 
@@ -675,6 +639,7 @@ async def dotyk_a_gui_task():
                     akce = notif_app.handle_event(ev_type, x, y)
                     if akce == "BACK":
                         current_state = STATE_MENU
+                        zmen_frekvenci_cpu(160000000)
                         display.root_group = menu_app.group
                     elif akce == "CLEARED":
                         try:
@@ -687,17 +652,17 @@ async def dotyk_a_gui_task():
                     app = moblin_app if current_state == STATE_MOBLIN else hwtest_app
                     if ev_type == "TAP" and app.handle_tap(x, y) == "BACK":
                         current_state = STATE_MENU
+                        zmen_frekvenci_cpu(160000000)
                         display.root_group = menu_app.group
                         memory_cleanup("Zavření aplikací")
-
         except Exception as e:
             log(f"[TOUCH-ERR] {e}")
-
         await asyncio.sleep(0.04)
 
 # =========================================================================
-# HLAVNÍ SMYČKA A BEZPEČNÝ RUNTIME
+# HLAVNÍ BĚHOVÁ SMYČKA OS HODINEK
 # =========================================================================
+
 async def main():
     log("Spouštím optimalizovaný CircuitPython OS pro T-Watch-S3...")
     await asyncio.gather(
@@ -712,56 +677,46 @@ async def main():
 
 try:
     asyncio.run(main())
-
 except KeyboardInterrupt:
     log("[REPL] Přerušeno uživatelem.")
-
 except MemoryError:
-    log("[CRITICAL] Došla paměť RAM! Provádím emergency reload...")
-    memory_cleanup("Emergency MemoryError")
-    time.sleep(1)
+    log("[CRITICAL] Došla paměť!")
+    memory_cleanup("Nouzový úklid RAM")
     supervisor.reload()
-
 except Exception as e:
-    log(f"[CRASH] Neošetřená chyba ({type(e).__name__}): {e}")
+    log(f"[CRASH] Neošetřená chyba: {type(e).__name__}: {e}")
     time.sleep(1)
     supervisor.reload()
-
 finally:
     log("[SYSTEM] Zahajuji bezpečný úklid...")
-
     try:
         if radio is not None:
             if hasattr(radio, 'advertising') and radio.advertising:
                 radio.stop_advertising()
-                log("[BLE] Advertising zastaven.")
-            
             if radio.connected:
                 for conn in list(radio.connections):
                     try:
                         conn.disconnect()
-                        log("[BLE] Odpojen telefon.")
                     except Exception:
                         pass
-                time.sleep(0.2)
-
             _bleio.adapter.enabled = False
-            time.sleep(0.1)
+            time.sleep(0.2)
             _bleio.adapter.enabled = True
             log("[BLE] BLE adaptér resetován.")
     except Exception as e:
-        log(f"[BLE-CLEANUP-ERR] {e}")
+        log(f"[BLE-CLEANUP] {e}")
 
     try:
         nastav_jas(100)
         display.root_group = displayio.CIRCUITPYTHON_TERMINAL
-        try:
-            i2c.unlock()
-            log("[I2C] Sběrnice odemčena.")
-        except Exception:
-            pass
-    except Exception as e:
-        log(f"[HW-CLEANUP-ERR] {e}")
+        memory_cleanup("Závěrečný úklid")
+    except Exception:
+        pass
 
-    memory_cleanup("Závěrečný úklid")
+    try:
+        i2c.unlock()
+        log("[I2C] Sběrnice odemčena.")
+    except Exception:
+        pass
+
     log("[SYSTEM] Úklid dokončen.")
