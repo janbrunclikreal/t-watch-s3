@@ -124,7 +124,8 @@ main_group = displayio.Group()
 
 datum_label = label.Label(terminalio.FONT, text="01.01.", color=0xFFFFFF, x=5, y=15)
 status_label = label.Label(terminalio.FONT, text="W:off B:off", color=0x444444, x=55, y=15)
-bat_label = label.Label(terminalio.FONT, text="B:--%", color=0xFF9600, x=210, y=15)
+bat_label = label.Label(terminalio.FONT, text="B:--%", color=0xFF9600, x=155, y=15)
+cpu_label = label.Label(terminalio.FONT, text="C:--%", color=0x00D0FF, x=205, y=15)
 cas_label = label.Label(terminalio.FONT, text="00:00:00", color=0x03F830, scale=5, x=2, y=50)
 ntp_label = label.Label(terminalio.FONT, text="N: Off", color=0xFF9600, x=5, y=230)
 kroky_label = label.Label(terminalio.FONT, text="K: 0", color=0xFFD700, scale=1, x=60, y=230)
@@ -134,6 +135,7 @@ mv_label = label.Label(terminalio.FONT, text="---- mV", color=0xFF4444, x=195, y
 main_group.append(datum_label)
 main_group.append(status_label)
 main_group.append(bat_label)
+main_group.append(cpu_label)
 main_group.append(cas_label)
 main_group.append(ntp_label)
 main_group.append(kroky_label)
@@ -513,13 +515,15 @@ async def pocitadlo_kroku_task():
 
         await asyncio.sleep(0.2)
 
-
 async def graficka_smycka_hodin_task():
-    """Obnovování textů ciferníku a statusů"""
+    """Obnovování textů ciferníku, statusů a výpočet vytížení CPU"""
     log("[Task] Grafická smyčka hodin spuštěna.")
     posledni_sekunda = -1
+    posledni_mereni_cas = time.monotonic()
 
     while True:
+        t_start = time.monotonic()
+        
         if displej_vzhuru and rtc_hw:
             try:
                 t = rtc_hw.datetime
@@ -529,8 +533,23 @@ async def graficka_smycka_hodin_task():
                         cas_label.text = f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}"
                         datum_label.text = f"{t.tm_mday:02d}.{t.tm_mon:02d}."
 
+                        # Aktualizace RAM každých 5 sekund
                         if t.tm_sec % 5 == 0:
                             ram_label.text = f"R: {gc.mem_free() // 1024}k"
+
+                        # Aktualizace Baterie a Vytížení CPU každou sekundu
+                        dt = t_start - posledni_mereni_cas
+                        posledni_mereni_cas = t_start
+                        
+                        # Výpočet CPU: Očekávaný interval vs. reálný průběh smyčky
+                        # 0.2s je cílový interval spánku. Pokud smyčka trvala déle, CPU pracovalo.
+                        if dt > 0:
+                            pouzity_cas = max(0, dt - 0.2)
+                            vyuziti_cpu = min(100, int((pouzity_cas / dt) * 100))
+                            
+                            # Základní korekce pro vizualizaci klidového stavu (Idle baseline ~5-15%)
+                            vyuziti_cpu = max(5, vyuziti_cpu) 
+                            cpu_label.text = f"C:{vyuziti_cpu:02d}%"
 
                         if t.tm_sec % 10 == 0:
                             try:
@@ -556,14 +575,14 @@ async def graficka_smycka_hodin_task():
                     except Exception:
                         b_str, mv_str = "Neznámo", "---- mV"
 
-                    hwtest_app.update_data(b_str, mv_str, cas_sec, volna_ram)
+                    hwtest_app.update_data(b_str, mv_str, cas_sec, volna_ram, vyuziti_cpu)
 
             except Exception as e:
                 log(f"[GUI-ERR] {e}")
+                
             await asyncio.sleep(0.2)
         else:
             await asyncio.sleep(0.5)
-
 
 async def dotyk_a_gui_task():
     """Obsluha dotykové vrstvy a přepínání obrazovek"""
