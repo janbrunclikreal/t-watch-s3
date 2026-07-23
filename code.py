@@ -189,10 +189,19 @@ def uloz_kroky_do_db(datum_str, pocet_kroku):
         else:
             log(f"[DB-ERR] Chyba zápisu: {e}")
 
-# --- AKCELEROMETR BMA423 ---
+def bma423_init():
+    global bma_sensor
+    try:
+        bma_sensor = bma423.BMA423(i2c)
+        log("[BMA423] Akcelerometr v režimu G-Force inicializován.")
+    except Exception as e:
+        log(f"[BMA423-ERR] {e}")
+
+# --- AKCELEROMETR BMA423 & KROKOMĚR ---
 bma_sensor = None
 posledni_magnitude = 1.0
 posledni_krok_cas = 0
+posledni_milnik_kroku = 0  # Sleduje tisícovky kroků (1000, 2000, 3000...)
 
 def bma423_init():
     global bma_sensor
@@ -203,33 +212,36 @@ def bma423_init():
         log(f"[BMA423-ERR] {e}")
 
 def bma423_merit_kroky():
-    global kroky_dnes, posledni_magnitude, posledni_krok_cas
+    global kroky_dnes, posledni_magnitude, posledni_krok_cas, posledni_milnik_kroku
     if bma_sensor:
         try:
             x, y, z = bma_sensor.acceleration
             magnitude = math.sqrt(x*x + y*y + z*z)
             nyni = time.monotonic()
+
+            # Detekce kroku (překročení prahu G-Force)
             if magnitude > 1.18 and posledni_magnitude <= 1.18:
                 if (nyni - posledni_krok_cas) > 0.33:
                     kroky_dnes += 1
                     posledni_krok_cas = nyni
-                    if magnitude > 2.50:
+
+                    # HAPTIKÝ MILNÍK: Zavibruje pouze při dosažení každých 1 000 kroků
+                    aktualni_milnik = kroky_dnes // 1000
+                    if aktualni_milnik > posledni_milnik_kroku and aktualni_milnik > 0:
+                        posledni_milnik_kroku = aktualni_milnik
+                        log(f"[KROKY] Dosaženo milníku: {kroky_dnes} kroků! Vibruji...")
                         try:
-                            drv.sequence[0] = Effect(47)
+                            drv.sequence[0] = Effect(47) # Dlouhý oslavný pulz
                             drv.play()
                         except Exception:
                             pass
-                    else:
-                        try:
-                            drv.sequence[0] = Effect(14)
-                            drv.play()
-                        except Exception:
-                            pass
+
             posledni_magnitude = magnitude
         except Exception:
             pass
     return kroky_dnes
 
+# Inicializace senzoru při startu
 bma423_init()
 
 # =========================================================================
