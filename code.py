@@ -88,6 +88,16 @@ def memory_cleanup(reason=""):
     duvod_str = f" ({reason})" if reason else ""
     log(f"[MEM]{duvod_str} Uvolněno: {(volno_po - volno_pred)//1024} kB | Volno: {volno_po//1024} kB")
 
+def nastav_cpu_mhz(mhz):
+    """Změní frekvenci CPU za běhu (např. 80, 160, 240 MHz)"""
+    try:
+        f_hz = mhz * 1000000
+        if microcontroller.cpu.frequency != f_hz:
+            microcontroller.cpu.frequency = f_hz
+            log(f"[POWER] CPU přepnuto na {mhz} MHz")
+    except Exception as e:
+        log(f"[POWER-ERR] Nelze změnit takt CPU: {e}")
+
 # --- OPTIMALIZACE SPOTŘEBY ---
 try:
     microcontroller.cpu.frequency = 80000000
@@ -437,6 +447,7 @@ async def hlidac_korunky_task():
                             pass
                     else:
                         if current_state != STATE_WATCHFACE:
+                            nastav_cpu_mhz(80)
                             current_state = STATE_WATCHFACE
                             display.root_group = main_group
                             memory_cleanup("Návrat na Watchface")
@@ -610,14 +621,18 @@ async def dotyk_a_gui_task():
                         log(f"[MENU-TAP] Vybrána akce: {akce}")
                         if akce == "MOBLIN":
                             current_state = STATE_MOBLIN
+                            nastav_cpu_mhz(240)
                             display.root_group = moblin_app.group
                         elif akce == "NOTIF":
+                            nastav_cpu_mhz(160)
                             current_state = STATE_NOTIF
                             display.root_group = notif_app.group
                         elif akce == "HWTEST":
+                            nastav_cpu_mhz(80)
                             current_state = STATE_HWTEST
                             display.root_group = hwtest_app.group
                         elif akce == "BACK":
+                            nastav_cpu_mhz(80)
                             current_state = STATE_WATCHFACE
                             display.root_group = main_group
                             memory_cleanup("Zavření menu")
