@@ -14,6 +14,7 @@ import microcontroller
 import supervisor
 import _bleio
 import sys
+
 sys.path.append("/modules")
 
 from adafruit_display_text import label
@@ -65,7 +66,7 @@ try:
 except Exception as e:
     print(f"[RTC-INIT-ERR] {e}")
 
-# --- POMOCNÁ FUNKCE PRO LOGOVÁNÍ S MILISEKUNDAMI ---
+# --- POMOCNÁ FUNKCE PRO LOGOVÁNÍ A SPRÁVU PAMĚTI ---
 def log(zprava):
     """Vytiskne zprávu s přesným časovým razítkem [HH:MM:SS.mmm]"""
     try:
@@ -78,6 +79,14 @@ def log(zprava):
         ms = int((mono % 1) * 1000)
         cas_str = f"{s}s.{ms:03d}"
     print(f"[{cas_str}] {zprava}")
+
+def memory_cleanup(reason=""):
+    """Event-driven uvolnění paměti pro zamezení micro-stutteringu"""
+    volno_pred = gc.mem_free()
+    gc.collect()
+    volno_po = gc.mem_free()
+    duvod_str = f" ({reason})" if reason else ""
+    log(f"[MEM]{duvod_str} Uvolněno: {(volno_po - volno_pred)//1024} kB | Volno: {volno_po//1024} kB")
 
 # --- OPTIMALIZACE SPOTŘEBY ---
 try:
@@ -114,27 +123,21 @@ display = board.DISPLAY
 main_group = displayio.Group()
 
 datum_label = label.Label(terminalio.FONT, text="01.01.", color=0xFFFFFF, x=5, y=15)
-main_group.append(datum_label)
-
 status_label = label.Label(terminalio.FONT, text="W:off B:off", color=0x444444, x=55, y=15)
-main_group.append(status_label)
-
 bat_label = label.Label(terminalio.FONT, text="B:--%", color=0xFF9600, x=210, y=15)
-main_group.append(bat_label)
-
 cas_label = label.Label(terminalio.FONT, text="00:00:00", color=0x03F830, scale=5, x=2, y=50)
-main_group.append(cas_label)
-
 ntp_label = label.Label(terminalio.FONT, text="N: Off", color=0xFF9600, x=5, y=230)
-main_group.append(ntp_label)
-
 kroky_label = label.Label(terminalio.FONT, text="K: 0", color=0xFFD700, scale=1, x=60, y=230)
-main_group.append(kroky_label)
-
 ram_label = label.Label(terminalio.FONT, text="R: 0000k", color=0x00D0FF, x=130, y=230)
-main_group.append(ram_label)
-
 mv_label = label.Label(terminalio.FONT, text="---- mV", color=0xFF4444, x=195, y=230)
+
+main_group.append(datum_label)
+main_group.append(status_label)
+main_group.append(bat_label)
+main_group.append(cas_label)
+main_group.append(ntp_label)
+main_group.append(kroky_label)
+main_group.append(ram_label)
 main_group.append(mv_label)
 
 # --- APLE/MODULY GUI ---
@@ -281,6 +284,7 @@ async def wifi_cas_sync_task():
         pass
     status_label.text = "W:off B:off"
     wifi_sync_probha = False
+    memory_cleanup("Po Wi-Fi sync")
 
 
 async def ble_ancs_task():
@@ -311,7 +315,6 @@ async def ble_ancs_task():
                 if ancs.AppleNotificationCenterService not in connection:
                     continue
 
-                # Pokus o párování / dojednání relace
                 try:
                     if not connection.paired:
                         log("[BLE] Dojednávám šifrování relace...")
@@ -322,7 +325,6 @@ async def ble_ancs_task():
 
                 posledni_zname_notifikace = set()
 
-                # Smyčka aktivního spojení
                 while connection.connected:
                     try:
                         ans = connection[ancs.AppleNotificationCenterService]
@@ -340,17 +342,14 @@ async def ble_ancs_task():
                                     
                                     log(f"[ANCS-NOTIF] {app_id} | {title}: {msg}")
 
-                                    # 1. Zavibrujeme
                                     try:
                                         drv.sequence[0] = Effect(14)
                                         drv.play()
                                     except Exception:
                                         pass
 
-                                    # 2. Probudíme displej
                                     probud_displej()
 
-                                    # 3. Uložíme zprávu do aplikací notifikací
                                     try:
                                         notif_app.add_notification(app_id, f"{title}: {msg}")
                                     except Exception:
@@ -366,6 +365,7 @@ async def ble_ancs_task():
 
             log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
             status_label.text = "W:off B:off"
+            memory_cleanup("Po odpojení BLE")
             await asyncio.sleep(1)
 
         except Exception as e:
@@ -425,6 +425,7 @@ async def hlidac_korunky_task():
                         if current_state != STATE_WATCHFACE:
                             current_state = STATE_WATCHFACE
                             display.root_group = main_group
+                            memory_cleanup("Návrat na Watchface")
                             log("[AKCE] Návrat na Ciferník")
                         else:
                             log("[AKCE] Uspávám displej...")
@@ -588,6 +589,7 @@ async def dotyk_a_gui_task():
                         elif akce == "BACK":
                             current_state = STATE_WATCHFACE
                             display.root_group = main_group
+                            memory_cleanup("Zavření menu")
 
                 elif current_state == STATE_NOTIF:
                     akce = notif_app.handle_event(ev_type, x, y)
@@ -606,6 +608,7 @@ async def dotyk_a_gui_task():
                     if ev_type == "TAP" and app.handle_tap(x, y) == "BACK":
                         current_state = STATE_MENU
                         display.root_group = menu_app.group
+                        memory_cleanup("Zavření aplikací")
 
         except Exception as e:
             log(f"[TOUCH-ERR] {e}")
@@ -613,10 +616,10 @@ async def dotyk_a_gui_task():
         await asyncio.sleep(0.04)
 
 # =========================================================================
-# HLAVNÍ BĚHOVÁ SMYČKA OS HODINEK
+# HLAVNÍ SMYČKA A BEZPEČNÝ RUNTIME
 # =========================================================================
 async def main():
-    log("Spouštím kompletní CircuitPython OS pro T-Watch-S3...")
+    log("Spouštím optimalizovaný CircuitPython OS pro T-Watch-S3...")
     await asyncio.gather(
         hlidac_korunky_task(),
         sprava_napajeni_task(),
@@ -633,55 +636,52 @@ try:
 except KeyboardInterrupt:
     log("[REPL] Přerušeno uživatelem.")
 
+except MemoryError:
+    log("[CRITICAL] Došla paměť RAM! Provádím emergency reload...")
+    memory_cleanup("Emergency MemoryError")
+    time.sleep(1)
+    supervisor.reload()
+
 except Exception as e:
-    log(f"[CRASH] Neošetřená chyba: {e}")
+    log(f"[CRASH] Neošetřená chyba ({type(e).__name__}): {e}")
+    time.sleep(1)
+    supervisor.reload()
 
 finally:
     log("[SYSTEM] Zahajuji bezpečný úklid...")
-    
-    # 1. BEZPEČNÉ ODPOJENÍ A RESET BLE
+
     try:
         if radio is not None:
-            # Zastavíme inzerci (pokud běží)
-            if radio.advertising:
+            if hasattr(radio, 'advertising') and radio.advertising:
                 radio.stop_advertising()
-                log("[BLE] Advertisment zastaven.")
+                log("[BLE] Advertising zastaven.")
             
-            # Odpojíme aktivní spojení
             if radio.connected:
-                for conn in radio.connections:
-                    log("[BLE] Posílám požadavek na odpojení telefonu...")
-                    conn.disconnect()
+                for conn in list(radio.connections):
+                    try:
+                        conn.disconnect()
+                        log("[BLE] Odpojen telefon.")
+                    except Exception:
+                        pass
                 time.sleep(0.2)
-            
-            # HARDWAROVÝ RESET BLE STACKU
-            # Vypnutím adaptéru vynutíme okamžitý Link Loss na straně iPhonu.
+
             _bleio.adapter.enabled = False
             time.sleep(0.1)
             _bleio.adapter.enabled = True
-            log("[BLE] BLE adaptér resetován (uvolněno z iPhonu).")
-
+            log("[BLE] BLE adaptér resetován.")
     except Exception as e:
-        log(f"[BLE] Chyba při úklidu BLE: {e}")
+        log(f"[BLE-CLEANUP-ERR] {e}")
 
-    # 2. ÚKLID HARDWARU A DISPLEJE
     try:
         nastav_jas(100)
         display.root_group = displayio.CIRCUITPYTHON_TERMINAL
-        # Bezpečné odemčení I2C sběrnice
         try:
             i2c.unlock()
             log("[I2C] Sběrnice odemčena.")
         except Exception:
-            pass  # Pokud zamčená nebyla, výjimku ignorujeme
-            
+            pass
     except Exception as e:
-        log(f"[HW] Chyba při úklidu HW: {e}")
+        log(f"[HW-CLEANUP-ERR] {e}")
 
-    # 3. ZASTAVENÍ ASYNCIO LOOPY
-    try:
-        loop = asyncio.get_event_loop()
-        loop.stop()
-        log("[ASYNC] Event loop zastavena.")
-    except Exception as e:
-        log(f"[ASYNC] Úklid async selhal: {e}")
+    memory_cleanup("Závěrečný úklid")
+    log("[SYSTEM] Úklid dokončen.")
