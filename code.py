@@ -26,6 +26,9 @@ import bma423
 # --- BLE ANCS IMPORTY & INICIALIZACE ---
 radio = None
 ble_dostupne = False
+ble_adv_start_time = time.monotonic()
+ble_pause_advertising = False
+
 try:
     import adafruit_ble
     from adafruit_ble.advertising.standard import SolicitServicesAdvertisement
@@ -174,6 +177,9 @@ def nastav_jas(procenta):
 def probud_displej():
     global displej_vzhuru, posledni_aktivita
     posledni_aktivita = time.monotonic()
+    
+    obnov_ble_inzerci()
+    
     if not displej_vzhuru:
         for jas in range(0, 91, 20):
             nastav_jas(jas)
@@ -256,6 +262,14 @@ def bma423_merit_kroky():
 # Inicializace senzoru při startu
 bma423_init()
 
+def obnov_ble_inzerci():
+    """Resetuje BLE časovač a probudí rádio ze 30s spánku"""
+    global ble_adv_start_time, ble_pause_advertising
+    ble_adv_start_time = time.monotonic()
+    if ble_pause_advertising:
+        ble_pause_advertising = False
+        log("[BLE] Obnovuji inzerci na základě interakce...")
+        
 # =========================================================================
 # ASYNCHRONNÍ TASKY
 # =========================================================================
@@ -312,8 +326,8 @@ async def wifi_cas_sync_task():
 
 
 async def ble_ancs_task():
-    """Robustní BLE ANCS task pro příchozí notifikace z iOS/Androidu"""
-    global posledni_aktivita, displej_vzhuru, radio
+    """Robustní BLE ANCS task s poctivým 30s timeoutem spánku"""
+    global posledni_aktivita, displej_vzhuru, radio, ble_adv_start_time, ble_pause_advertising
     if not ble_dostupne or radio is None:
         log("[BLE-WARN] Knihovny adafruit_ble nebo ANCS chybí!")
         return
@@ -324,73 +338,92 @@ async def ble_ancs_task():
 
     while True:
         try:
-            log("[BLE] Spouštím inzerci pro ANCS...")
-            status_label.text = "W:off B:adv-iOS"
-            radio.start_advertising(a)
+            # 1. Pokud rádio pauzuje po timeoutu, spíme a čekáme na korunku/dotyk
+            if ble_pause_advertising:
+                if radio.advertising:
+                    radio.stop_advertising()
+                status_label.text = "W:off B:sleep"
+                await asyncio.sleep(1.0)
+                continue
 
+            # 2. Spuštění inzerce (pokud neběží)
+            if not radio.advertising and not radio.connected:
+                log("[BLE] Spouštím inzerci pro ANCS...")
+                status_label.text = "W:off B:adv-iOS"
+                radio.start_advertising(a)
+                ble_adv_start_time = time.monotonic()
+
+            # 3. Čekání na připojení s 30s limitovačem
             while not radio.connected:
+                # Pokud vypršel limit 30 s neaktivity
+                if (time.monotonic() - ble_adv_start_time) > 30:
+                    log("[BLE-POWER] Timeout inzerce (30 s) vypršel! Vypínám BLE rádio...")
+                    if radio.advertising:
+                        radio.stop_advertising()
+                    ble_pause_advertising = True  # Přepneme do trvalého spánku
+                    break
+
                 await asyncio.sleep(0.5)
 
-            log("[BLE] Telefon připojen!")
-            status_label.text = "W:off B:iOS-OK"
-            radio.stop_advertising()
+            # 4. Obsluha aktivního spojení po připojení iPhonu
+            if radio.connected:
+                ble_pause_advertising = False
+                log("[BLE] Telefon připojen!")
+                status_label.text = "W:off B:iOS-OK"
+                radio.stop_advertising()
 
-            for connection in radio.connections:
-                if ancs.AppleNotificationCenterService not in connection:
-                    continue
-
-                try:
-                    if not connection.paired:
-                        log("[BLE] Dojednávám šifrování relace...")
-                        connection.pair()
-                        log("[BLE] Spárováno!")
-                except Exception as e:
-                    log(f"[BLE-PAIR-WARN] {e}")
-
-                posledni_zname_notifikace = set()
-
-                while connection.connected:
+                for connection in list(radio.connections):
+                    if ancs.AppleNotificationCenterService not in connection:
+                        continue
+                    
                     try:
-                        ans = connection[ancs.AppleNotificationCenterService]
-                        active_notifs = ans.active_notifications
-
-                        if len(active_notifs) > 0:
-                            for notif_id in active_notifs:
-                                if notif_id not in posledni_zname_notifikace:
-                                    posledni_zname_notifikace.add(notif_id)
-                                    notif = active_notifs[notif_id]
-                                    
-                                    app_id = notif.app_id or "Aplikace"
-                                    title = notif.title or ""
-                                    msg = notif.message or ""
-                                    
-                                    log(f"[ANCS-NOTIF] {app_id} | {title}: {msg}")
-
-                                    try:
-                                        drv.sequence[0] = Effect(14)
-                                        drv.play()
-                                    except Exception:
-                                        pass
-
-                                    probud_displej()
-
-                                    try:
-                                        notif_app.add_notification(app_id, f"{title}: {msg}")
-                                    except Exception:
-                                        pass
-
-                    except (_bleio.BluetoothError, AttributeError, KeyError):
-                        await asyncio.sleep(1.0)
+                        if not connection.paired:
+                            log("[BLE] Dojednávám šifrování relace...")
+                            connection.pair()
+                            log("[BLE] Spárováno!")
                     except Exception as e:
-                        log(f"[ANCS-ERR] {e}")
-                        await asyncio.sleep(1.0)
+                        log(f"[BLE-PAIR-WARN] {e}")
 
-                    await asyncio.sleep(0.3)
+                    posledni_zname_notifikace = set()
 
-            log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
-            status_label.text = "W:off B:off"
-            memory_cleanup("Po odpojení BLE")
-            await asyncio.sleep(1)
+                    while connection.connected:
+                        try:
+                            ans = connection[ancs.AppleNotificationCenterService]
+                            active_notifs = ans.active_notifications
+                            if len(active_notifs) > 0:
+                                for notif_id in active_notifs:
+                                    if notif_id not in posledni_zname_notifikace:
+                                        posledni_zname_notifikace.add(notif_id)
+                                        notif = active_notifs[notif_id]
+                                        app_id = notif.app_id or "Aplikace"
+                                        title = notif.title or ""
+                                        msg = notif.message or ""
+                                        log(f"[ANCS-NOTIF] {app_id} | {title}: {msg}")
+                                        
+                                        try:
+                                            drv.sequence[0] = Effect(14)
+                                            drv.play()
+                                        except Exception:
+                                            pass
+                                            
+                                        probud_displej()
+                                        try:
+                                            notif_app.add_notification(app_id, f"{title}: {msg}")
+                                        except Exception:
+                                            pass
+                        except (_bleio.BluetoothError, AttributeError, KeyError):
+                            await asyncio.sleep(1.0)
+                        except Exception as e:
+                            log(f"[ANCS-ERR] {e}")
+                            await asyncio.sleep(1.0)
+                            
+                        await asyncio.sleep(0.3)
+
+                log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
+                status_label.text = "W:off B:off"
+                memory_cleanup("Po odpojení BLE")
+                ble_adv_start_time = time.monotonic()
+                await asyncio.sleep(1)
 
         except Exception as e:
             log(f"[BLE-GLOBAL-ERR] {e}")
@@ -439,6 +472,7 @@ async def hlidac_korunky_task():
                 if irq_status in (2, 3):
                     log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
                     posledni_aktivita = time.monotonic()
+                    ble_adv_start_time = time.monotonic()
                     if not displej_vzhuru:
                         probud_displej()
                         try:
