@@ -66,17 +66,58 @@ plynule uspí přes `display.brightness`.
 /modules/app_moblin.py        # AppMoblin
 /modules/app_hwtest.py        # AppHwTest
 /modules/app_notifications.py # AppNotifications
-/modules/bma423.py            # driver BMA423
-/modules/axp2101.py           # driver AXP2101 PMU
-/modules/adafruit_pcf8563/    # RTC
-/modules/adafruit_drv2605.mpy
-/modules/adafruit_display_text/
-/modules/adafruit_ble/        # + adafruit_ble_apple_notification_center
 /kroky_db.json                # vytvoří se automaticky
+/lib/adafruit_ble/__init__.mpy
+/lib/adafruit_ble/advertising/__init__.mpy
+/lib/adafruit_ble/advertising/adafruit.mpy
+/lib/adafruit_ble/advertising/standard.mpy
+/lib/adafruit_ble/attributes/__init__.mpy
+/lib/adafruit_ble/characteristics/__init__.mpy
+/lib/adafruit_ble/characteristics/float.mpy
+/lib/adafruit_ble/characteristics/int.mpy
+/lib/adafruit_ble/characteristics/json.mpy
+/lib/adafruit_ble/characteristics/stream.mpy
+/lib/adafruit_ble/characteristics/string.mpy
+/lib/adafruit_ble/services/__init__.mpy
+/lib/adafruit_ble/services/circuitpython.mpy
+/lib/adafruit_ble/services/microbit.py
+/lib/adafruit_ble/services/nordic.mpy
+/lib/adafruit_ble/services/sphero.mpy
+/lib/adafruit_ble/services/standard/__init__.mpy
+/lib/adafruit_ble/services/standard/device_info.mpy
+/lib/adafruit_ble/services/standard/hid.mpy
+/lib/adafruit_ble/uuid/__init__.mpy
+/lib/adafruit_ble_apple_notification_center.mpy
+/lib/adafruit_bus_device/__init__.py
+/lib/adafruit_bus_device/i2c_device.mpy
+/lib/adafruit_bus_device/spi_device.mpy
+/lib/adafruit_display_text/__init__.mpy
+/lib/adafruit_display_text/bitmap_label.mpy
+/lib/adafruit_display_text/label.mpy
+/lib/adafruit_display_text/outlined_label.mpy
+/lib/adafruit_display_text/scrolling_label.mpy
+/lib/adafruit_display_text/text_box.mpy
+/lib/adafruit_drv2605.mpy
+/lib/adafruit_ntp.mpy
+/lib/adafruit_pcf8563/clock.mpy
+/lib/adafruit_pcf8563/pcf8563.mpy
+/lib/adafruit_pcf8563/timer.mpy
+/lib/adafruit_ticks.mpy
+/lib/adafruit_touchscreen.mpy
+/lib/asyncio/__init__.mpy
+/lib/asyncio/core.mpy
+/lib/asyncio/event.mpy
+/lib/asyncio/funcs.mpy
+/lib/asyncio/lock.mpy
+/lib/asyncio/stream.mpy
+/lib/asyncio/task.mpy
+/lib/asyncio/traceback.mpy
+/lib/touch.py
+
 ```
 
 > Moduly v `/modules` musí odpovídat verzi vašeho CircuitPythonu
-> (doporučeno **9.x** pro ESP32-S3).
+> (doporučeno **10.3.x** pro ESP32-S3).
 
 ---
 
@@ -211,8 +252,15 @@ dostupné RTC – pak se používá skutečný čas.
 
 ## 🧾 Licence
 
-Tento firmware je interní projekt autora. Knihovny třetích stran
-(Adafruit, LILYGO, BMA423, aj.) se řídí jejich vlastními licencemi.
+Tento firmware je licencován pod **MIT licencí** – viz soubor [`LICENSE`](./LICENSE).
+
+```
+MIT License
+Copyright (c) 2026 Jan Brunclík
+```
+
+> Knihovny třetích stran (Adafruit, LILYGO, BMA423, aj.) se řídí jejich
+> vlastními licencemi.
 
 ---
 
