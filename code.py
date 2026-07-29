@@ -118,14 +118,14 @@ except Exception as e:
 display = board.DISPLAY
 main_group = displayio.Group()
 
-datum_label = label.Label(terminalio.FONT, text="01.01.", color=0xFFFFFF, x=5, y=15)
-status_label = label.Label(terminalio.FONT, text="W:off B:off", color=0x444444, x=55, y=15)
-bat_label = label.Label(terminalio.FONT, text="B:--% ", color=0xFF9600, x=160, y=15)
-cpu_label = label.Label(terminalio.FONT, text="C:00%", color=0x00D0FF, x=205, y=15)
-cas_label = label.Label(terminalio.FONT, text="00:00:00", color=0x03F830, scale=5, x=2, y=50)
-ntp_label = label.Label(terminalio.FONT, text="N: Off", color=0xFF9600, x=5, y=230)
-kroky_label = label.Label(terminalio.FONT, text="K: 0", color=0xFFD700, scale=1, x=60, y=230)
-ram_label = label.Label(terminalio.FONT, text="R: 0000k", color=0x00D0FF, x=130, y=230)
+datum_label = label.Label(terminalio.FONT, text="01.01.", color=0xFFFFFF, x=5, y=230)
+status_label = label.Label(terminalio.FONT, text="W:off B:off", color=0x444444, x=60, y=15)
+bat_label = label.Label(terminalio.FONT, text="B:--% ", color=0xFF9600, x=165, y=15)
+cpu_label = label.Label(terminalio.FONT, text="C:00%", color=0x00D0FF, x=207, y=15)
+cas_label = label.Label(terminalio.FONT, text="00:00:00", color=0x03F830, scale=1, x=2, y=15)
+ntp_label = label.Label(terminalio.FONT, text="N: Off", color=0xFF9600, x=45, y=230)
+kroky_label = label.Label(terminalio.FONT, text="K: 0", color=0xFFD700, scale=1, x=90, y=230)
+ram_label = label.Label(terminalio.FONT, text="R: 0000k", color=0x00D0FF, x=140, y=230)
 mv_label = label.Label(terminalio.FONT, text="---- mV", color=0xFF4444, x=195, y=230)
 
 main_group.append(datum_label)
