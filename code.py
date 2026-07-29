@@ -412,27 +412,39 @@ async def hlidac_korunky_task():
 
     # OPRAVA ZAMČENÍ I2C: Použití try...finally pro bezpečné odemčení za všech okolností
     def direct_read_reg(reg):
+        # Zkontrolujeme, jestli se podařilo zamknout, hned na vstupu
+        if not i2c.try_lock():
+            return 0
+
         try:
-            if i2c.try_lock():
-                try:
-                    buffer = bytearray(1)
-                    i2c.writeto_then_readfrom(pmu_address, bytes([reg]), buffer)
-                    return buffer[0]
-                finally:
-                    i2c.unlock()
-        except Exception:
-            pass
-        return 0
+            buffer = bytearray(1)
+            i2c.writeto_then_readfrom(pmu_address, bytes([reg]), buffer)
+            return buffer[0]
+        except Exception as e:
+            # Tady můžete případně přidat logování chyby, 
+            # pokud chcete vidět, že čtení selhalo
+            print(f"I2C read error: {e}")
+            return 0
+        finally:
+            # Zámek se uvolní VŽDY, jakmile proběhne try nebo except blok
+            i2c.unlock()
 
     def direct_write_reg(reg, val):
-        try:
-            if i2c.try_lock():
-                try:
-                    i2c.writeto(pmu_address, bytes([reg, val]))
-                finally:
-                    i2c.unlock()
-        except Exception:
-            pass
+            try:
+                if i2c.try_lock():
+                    try:
+                        i2c.writeto(pmu_address, bytes([reg, val]))
+                        return True
+                    finally:
+                        i2c.unlock()
+                else:
+                    # Zde můžete případně zalogovat, že se nepodařilo získat zámek
+                    pass
+            except Exception as e:
+                # Tichá chyba je pryč, zde zachytíte konkrétní selhání zápisu
+                print(f"I2C write error: {e}")
+                pass
+            return False
 
     direct_write_reg(reg_irq_status, direct_read_reg(reg_irq_status))
 
@@ -531,37 +543,32 @@ async def pocitadlo_kroku_task():
         await asyncio.sleep(0.2)
 
 async def graficka_smycka_hodin_task():
-    """Obnovování textů ciferníku a diagnostiky CPU - s přesným měřením vytížení"""
+    """Obnovování textů ciferníku a diagnostiky CPU - optimalizované"""
     log("[Task] Grafická smyčka hodin spuštěna.")
     posledni_sekunda = -1
-    cpu_vyuziti_cache = 0  # Cache pro display update (není nutné aktualizovat každou iteraci)
+    cpu_vyuziti_cache = 0
 
     while True:
         t_loop_start = time.monotonic()
         
-        # Měříme skutečné trvání jedné iterace smyčky
-        # Cílený interval je 0.2s pro display ON stav
         if displej_vzhuru and rtc_hw:
             try:
                 t = rtc_hw.datetime
                 if current_state == STATE_WATCHFACE:
                     if t.tm_sec != posledni_sekunda:
                         posledni_sekunda = t.tm_sec
+                        
+                        # Čas a datum se mění každou sekundu
                         cas_label.text = f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}"
                         datum_label.text = f"{t.tm_mday:02d}.{t.tm_mon:02d}."
                         
-                        # NOVÉ MĚŘENÍ CPU: Na základě skutečného trvání smyčky
-                        # Pokud iterace trvá déle než plánovaných 0.2s, CPU je vytížen jinými tasky
+                        # Jednodušší a stabilnější odhad CPU z doby trvání jedné sekundy
                         loop_duration = time.monotonic() - t_loop_start
-                        
-                        if loop_duration > 0:
-                            # CPU % = jak dlouho trvá smyčka versus cílový interval 0.2s
-                            cpu_vyuziti_cache = min(99, int((loop_duration / 0.2) * 100))
-                        else:
-                            cpu_vyuziti_cache = 0
-                        
+                        cpu_vyuziti_cache = min(99, int((loop_duration / 0.2) * 100))
                         cpu_label.text = f"C:{cpu_vyuziti_cache:02d}%"
 
+                    # Aktualizaci RAM, baterie a I2C netaháme každých 0.2s, 
+                    # ale rozdělíme to na delší intervaly, ať to nezatěžuje sběrnici
                     if t.tm_sec % 5 == 0:
                         ram_label.text = f"R: {gc.mem_free() // 1024}k"
 
@@ -590,13 +597,14 @@ async def graficka_smycka_hodin_task():
                         b_str, mv_str = "Neznámo", "---- mV"
 
                     hwtest_app.update_data(b_str, mv_str, cas_sec, volna_ram, cpu_vyuziti_cache)
+
             except Exception as e:
                 log(f"[GUI-ERR] {e}")
             
+            # Důležité: await sleep musí být vždy, aby task pustil procesor ostatním
             await asyncio.sleep(0.2)
         else:
-            # Display je OFF - měříme CPU, ale nezobrazujeme (energie na display je větší)
-            # Pokud by bylo potřeba debug, zápis do logu by byl zde
+            # Display je OFF - spíme déle, ať procesor nic nedělá
             await asyncio.sleep(0.5)
 
 async def dotyk_a_gui_task():
