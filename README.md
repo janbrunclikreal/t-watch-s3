@@ -30,7 +30,7 @@ NTP synchronizaci, haptickou odezvu a chytrou správu napájení.
 
 ## 🗂 Architektura
 
-Kód je rozdělený na nezávislé `asyncio` korutiny spouštěné v `main()`:
+Kód je rozdělený do objektů `WatchRuntime`, `WatchHardware`, `WatchFaceUI`, `StepDatabase` a samostatných app tříd. `WatchRuntime.main()` pak spouští nezávislé `asyncio` korutiny:
 
 ```
 asyncio.gather(
@@ -60,13 +60,18 @@ plynule uspí přes `display.brightness`.
 ## 📁 Požadované soubory na zařízení (`CIRCUITPY`)
 
 ```
-/code.py                      # tento firmware
-/modules/touch.py             # TouchController (I2C dotykový driver)
-/modules/app_menu.py          # AppMenu
-/modules/app_moblin.py        # AppMoblin
-/modules/app_hwtest.py        # AppHwTest
-/modules/app_notifications.py # AppNotifications
-/kroky_db.json                # vytvoří se automaticky
+/code.py                      # tenký entrypoint, spouští watch_runtime.run()
+/modules/watch_runtime.py      # WatchRuntime + async tasky
+/modules/watch_hardware.py     # WatchHardware (PMU, RTC, BLE, BMA423, haptika)
+/modules/watch_ui.py           # WatchFaceUI
+/modules/watch_state.py        # sdílený stav hodinek
+/modules/watch_storage.py      # StepDatabase pro /kroky_db.json
+/modules/touch.py              # TouchController (I2C dotykový driver)
+/modules/app_menu.py           # AppMenu
+/modules/app_moblin.py         # AppMoblin
+/modules/app_hwtest.py         # AppHwTest
+/modules/app_notifications.py  # AppNotifications
+/kroky_db.json                 # vytvoří se automaticky
 /lib/adafruit_ble/__init__.mpy
 /lib/adafruit_ble/advertising/__init__.mpy
 /lib/adafruit_ble/advertising/adafruit.mpy
@@ -152,8 +157,8 @@ a modul běží zcela offline.
    * Rozbalte `adafruit-circuitpython-bundle` a zkopírujte potřebné `.mpy`
      do `/lib` na disku `CIRCUITPY`.
 3. **Přidejte vlastní moduly** (viz výše) do `/modules`.
-4. **Vložte `code.py`**
-   * Obsah tohoto repozitáře nahrajte jako `code.py` na `CIRCUITPY`.
+4. **Vložte `code.py` a `/modules`**
+   * Na `CIRCUITPY` nahrajte `code.py` i všechny Python soubory z adresáře `/modules`.
 5. **Nastavte `settings.toml`** (volitelně – pokud chcete Wi-Fi sync).
 6. **Restartujte hodinky** – měl by naskočit ciferník.
 
