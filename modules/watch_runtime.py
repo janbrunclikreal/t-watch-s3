@@ -32,7 +32,8 @@ class WatchRuntime:
         self.step_db = StepDatabase(self.hardware.DB_FILE, self.hardware.log)
         self.cpu_usage_cache = 0
         self.watchface.show_on(self.hardware.display)
-        self.hardware.set_cpu_frequency(80000000)
+        # Doporučeno: Nastavit stabilní frekvenci a neměnit ji za chodu během vykreslování
+        self.hardware.set_cpu_frequency(160000000)
 
     def memory_cleanup(self, reason=""):
         gc.collect()
@@ -41,40 +42,52 @@ class WatchRuntime:
         else:
             self.hardware.log(f"[MEM] Uvolněno | Volno: {gc.mem_free() // 1024} kB")
 
-    def wake_display(self):
+    async def wake_display_async(self):
+        """Neblokující rozsvícení displeje přes asyncio."""
         self.state.register_activity()
         if not self.state.display_awake:
+            self.state.display_awake = True
             for brightness in range(0, 91, 20):
                 self.hardware.set_brightness(brightness)
+                await asyncio.sleep(0.01)
+
+    async def sleep_display_async(self):
+        """Neblokující zhasnutí displeje přes asyncio."""
+        if self.state.display_awake:
+            for brightness in range(90, -1, -10):
+                self.hardware.set_brightness(brightness)
+                await asyncio.sleep(0.01)
+            self.state.display_awake = False
+
+    def wake_display(self):
+        """Synchronní záloha pro případy, kdy nelze použít await."""
+        self.state.register_activity()
+        if not self.state.display_awake:
+            self.hardware.set_brightness(90)
             self.state.display_awake = True
 
     def show_watchface(self, cleanup_reason=None):
         self.state.set_state(self.state.STATE_WATCHFACE)
-        self.hardware.set_cpu_frequency(80000000)
         self.watchface.show_on(self.hardware.display)
         if cleanup_reason:
             self.memory_cleanup(cleanup_reason)
 
     def show_menu(self, cleanup_reason=None):
         self.state.set_state(self.state.STATE_MENU)
-        self.hardware.set_cpu_frequency(160000000)
         self.hardware.display.root_group = self.menu_app.group
         if cleanup_reason:
             self.memory_cleanup(cleanup_reason)
 
     def show_moblin(self):
         self.state.set_state(self.state.STATE_MOBLIN)
-        self.hardware.set_cpu_frequency(240000000)
         self.hardware.display.root_group = self.moblin_app.group
 
     def show_notifications(self):
         self.state.set_state(self.state.STATE_NOTIF)
-        self.hardware.set_cpu_frequency(160000000)
         self.hardware.display.root_group = self.notif_app.group
 
     def show_hwtest(self):
         self.state.set_state(self.state.STATE_HWTEST)
-        self.hardware.set_cpu_frequency(80000000)
         self.hardware.display.root_group = self.hwtest_app.group
 
     async def wifi_cas_sync_task(self):
@@ -171,38 +184,39 @@ class WatchRuntime:
                             try:
                                 ancs_service = connection[self.hardware.ancs.AppleNotificationCenterService]
                                 active_notifications = ancs_service.active_notifications
-                                if len(active_notifications) > 0:
-                                    for notif_id in active_notifications:
+                                if active_notifications:
+                                    for notif_id in list(active_notifications.keys()):
                                         if notif_id in known_notifications:
                                             continue
 
                                         known_notifications.add(notif_id)
-                                        if len(known_notifications) > 50:
+                                        if len(known_notifications) > 30:
                                             known_notifications.clear()
                                             known_notifications.add(notif_id)
 
                                         notification = active_notifications[notif_id]
-                                        app_id = notification.app_id or "Aplikace"
-                                        title = notification.title or ""
-                                        message = notification.message or ""
+                                        app_id = getattr(notification, "app_id", "Aplikace") or "Aplikace"
+                                        title = getattr(notification, "title", "") or ""
+                                        message = getattr(notification, "message", "") or ""
+                                        
                                         self.hardware.log(f"[ANCS-NOTIF] {app_id} | {title}: {message}")
                                         self.hardware.play_effect(14)
-                                        self.wake_display()
+                                        await self.wake_display_async()
+                                        
                                         try:
                                             self.notif_app.add_notification(app_id, f"{title}: {message}")
                                         except Exception:
                                             pass
                             except Exception as err:
-                                err_type = type(err).__name__
-                                if err_type in ("BluetoothError", "AttributeError", "KeyError"):
-                                    await asyncio.sleep(1.0)
-                                else:
-                                    self.hardware.log(f"[ANCS-ERR] {err}")
-                                    await asyncio.sleep(1.0)
-                            await asyncio.sleep(0.3)
+                                self.hardware.log(f"[ANCS-ERR] {err}")
+                                await asyncio.sleep(1.0)
+                            
+                            # Uvolníme CPU pro ostatní tasky
+                            await asyncio.sleep(0.5)
 
                     self.hardware.log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
                     self.watchface.update_status("W:off B:off")
+                    known_notifications.clear()
                     self.memory_cleanup("Po odpojení BLE")
                     self.state.refresh_ble_advertising()
                     await asyncio.sleep(1)
@@ -228,7 +242,7 @@ class WatchRuntime:
                         self.hardware.log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
                         self.state.register_activity()
                         if not self.state.display_awake:
-                            self.wake_display()
+                            await self.wake_display_async()
                             self.hardware.play_effect(1)
                         else:
                             if self.state.current_state != self.state.STATE_WATCHFACE:
@@ -236,11 +250,8 @@ class WatchRuntime:
                                 self.hardware.log("[AKCE] Návrat na Ciferník")
                             else:
                                 self.hardware.log("[AKCE] Uspávám displej...")
-                                for brightness in range(90, -1, -10):
-                                    self.hardware.set_brightness(brightness)
-                                    await asyncio.sleep(0.01)
-                                self.state.display_awake = False
-                        await asyncio.sleep(0.5)
+                                await self.sleep_display_async()
+                        await asyncio.sleep(0.4)
             except Exception as err:
                 self.hardware.log(f"[CROWN-ERR] {err}")
             await asyncio.sleep(0.05 if self.state.display_awake else 0.2)
@@ -255,10 +266,7 @@ class WatchRuntime:
                 if self.state.display_awake and not self.state.wifi_sync_in_progress and not usb_connected:
                     if inactivity > self.state.sleep_timeout_sec:
                         self.hardware.log(f"[POWER] Timeout vypršel ({inactivity:.1f}s). Uspávám displej...")
-                        for brightness in range(90, -1, -10):
-                            self.hardware.set_brightness(brightness)
-                            await asyncio.sleep(0.02)
-                        self.state.display_awake = False
+                        await self.sleep_display_async()
             except Exception as err:
                 self.hardware.log(f"[POWER-TASK-ERR] {err}")
             await asyncio.sleep(0.5)
@@ -354,7 +362,7 @@ class WatchRuntime:
                 event = self.touch.get_event()
                 if event:
                     if not self.state.display_awake:
-                        self.wake_display()
+                        await self.wake_display_async()
                     self.state.register_activity()
                     event_type, x_pos, y_pos = event[0], event[1], event[2]
 

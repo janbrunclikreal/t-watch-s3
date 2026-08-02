@@ -36,12 +36,27 @@ class AppHwTest:
         self.group.append(back_lbl)
 
     def update_data(self, bat_text, mv_text, cas_str, ram_kb, cpu_pct):
-        """Metoda pro živou aktualizaci dat z hlavní smyčky code.py"""
-        self.bat_lbl.text = f"Baterie: {bat_text}"
-        self.mv_lbl.text = f"Napeti: {mv_text}"
-        self.rtc_lbl.text = f"RTC Cas: {cas_str}"
-        self.ram_lbl.text = f"Volna RAM: {ram_kb} kB"
-        self.cpu_lbl.text = f"Vytizeni CPU: {cpu_pct}%"
+        """Metoda pro živou aktualizaci dat bez zbytečných alokací RAM"""
+        
+        new_bat = f"Baterie: {bat_text}"
+        if self.bat_lbl.text != new_bat:
+            self.bat_lbl.text = new_bat
+
+        new_mv = f"Napeti: {mv_text}"
+        if self.mv_lbl.text != new_mv:
+            self.mv_lbl.text = new_mv
+
+        new_cas = f"RTC Cas: {cas_str}"
+        if self.rtc_lbl.text != new_cas:
+            self.rtc_lbl.text = new_cas
+
+        new_ram = f"Volna RAM: {ram_kb} kB"
+        if self.ram_lbl.text != new_ram:
+            self.ram_lbl.text = new_ram
+
+        new_cpu = f"Vytizeni CPU: {cpu_pct}%"
+        if self.cpu_lbl.text != new_cpu:
+            self.cpu_lbl.text = new_cpu
 
     def handle_tap(self, x, y):
         # Stisk dolní části obrazovky vrací "BACK"

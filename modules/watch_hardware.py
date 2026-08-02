@@ -1,4 +1,3 @@
-import math
 import os
 import time
 
@@ -16,6 +15,7 @@ import bma423
 
 class WatchHardware:
     DB_FILE = "/kroky_db.json"
+    PMU_ADDRESS = 0x34
 
     def __init__(self):
         self.radio = None
@@ -26,7 +26,7 @@ class WatchHardware:
 
         self.i2c = board.I2C()
         self.pmu = self._initialize_pmu()
-        time.sleep(0.1)
+        time.sleep(0.05)
         self.rtc = self._initialize_rtc()
         self.wifi_ssid = os.getenv("CIRCUITPYTHON_WIFI_SSID")
         self.wifi_pass = os.getenv("CIRCUITPYTHON_WIFI_PASSWORD")
@@ -108,8 +108,9 @@ class WatchHardware:
 
     def set_cpu_frequency(self, freq_hz):
         try:
-            microcontroller.cpu.frequency = freq_hz
-            self.log(f"[POWER] CPU nastaveno na {freq_hz // 1000000} MHz.")
+            if microcontroller.cpu.frequency != freq_hz:
+                microcontroller.cpu.frequency = freq_hz
+                self.log(f"[POWER] CPU nastaveno na {freq_hz // 1000000} MHz.")
         except Exception as err:
             self.log(f"[POWER-ERR] Nelze změnit frekvenci CPU: {err}")
 
@@ -117,6 +118,7 @@ class WatchHardware:
         self.display.brightness = percent / 100
 
     def play_effect(self, effect_id=14):
+        """Přehrání haptického efektu bez blokování smyčky."""
         try:
             if self.drv is not None:
                 self.drv.sequence[0] = Effect(effect_id)
@@ -147,25 +149,53 @@ class WatchHardware:
         except Exception:
             pass
 
+    def is_usb_powered(self):
+        """Přímé zjištění 5V napájení z AXP2101 PMU."""
+        try:
+            if self.pmu is not None:
+                if hasattr(self.pmu, "is_vbus_in"):
+                    return self.pmu.is_vbus_in()
+                # Alternativní načtení registru stavu napájení
+                status = self.read_register(self.PMU_ADDRESS, 0x00)
+                return (status & 0x20) != 0
+        except Exception:
+            pass
+        return False
+
     def read_battery_strings(self):
         try:
-            if self.pmu is not None and self.pmu.is_battery_connected:
-                return f"{self.pmu.battery_level}%", f"{self.pmu.battery_voltage} mV"
-            return " USB", "USB PWR"
+            if self.pmu is not None:
+                if self.is_usb_powered():
+                    return " USB", "USB PWR"
+                if hasattr(self.pmu, "battery_level"):
+                    return f"{self.pmu.battery_level}%", f"{self.pmu.battery_voltage} mV"
+            return "--%", "---- mV"
         except Exception:
             return "--%", "---- mV"
 
+    def read_battery_info(self):
+        """Vrací přesná čísla (procenta, napětí v mV) pro spravu_napajeni_task."""
+        try:
+            if self.pmu is not None:
+                level = getattr(self.pmu, "battery_level", 50)
+                voltage = getattr(self.pmu, "battery_voltage", 3700)
+                return level, voltage
+        except Exception:
+            pass
+        return 50, 3700
+
     def measure_steps(self, state):
+        """Optimalizovaná detekce kroků bez použití těžké operace math.sqrt()."""
         if self.bma_sensor is None:
             return state.steps_today
 
         try:
             x_val, y_val, z_val = self.bma_sensor.acceleration
+            # Prahová hodnota 1.18 G převrácená na druhou mocninu = 1.3924
             acc_sum = (x_val * x_val) + (y_val * y_val) + (z_val * z_val)
-            magnitude = math.sqrt(acc_sum) if acc_sum > 0 else 0.0
             now = time.monotonic()
 
-            if magnitude > 1.18 and state.last_magnitude <= 1.18:
+            if acc_sum > 1.3924 and getattr(state, "last_acc_sum", 0) <= 1.3924:
                 if (now - state.last_step_time) > 0.33:
                     state.steps_today += 1
                     state.last_step_time = now
@@ -175,32 +205,36 @@ class WatchHardware:
                         state.last_step_milestone = current_thousand
                         self.play_effect(14)
 
-            state.last_magnitude = magnitude
+            state.last_acc_sum = acc_sum
         except Exception:
             pass
 
         return state.steps_today
 
     def read_register(self, address, register):
+        """Bezpečné čtení I2C s ošetřením výjimek."""
         try:
-            if self.i2c.try_lock():
-                try:
-                    buffer = bytearray(1)
-                    self.i2c.writeto_then_readfrom(address, bytes([register]), buffer)
-                    return buffer[0]
-                finally:
-                    self.i2c.unlock()
+            while not self.i2c.try_lock():
+                time.sleep(0.001)
+            try:
+                buffer = bytearray(1)
+                self.i2c.writeto_then_readfrom(address, bytes([register]), buffer)
+                return buffer[0]
+            finally:
+                self.i2c.unlock()
         except Exception:
             pass
         return 0
 
     def write_register(self, address, register, value):
+        """Bezpečný zápis na I2C s ošetřením výjimek."""
         try:
-            if self.i2c.try_lock():
-                try:
-                    self.i2c.writeto(address, bytes([register, value]))
-                finally:
-                    self.i2c.unlock()
+            while not self.i2c.try_lock():
+                time.sleep(0.001)
+            try:
+                self.i2c.writeto(address, bytes([register, value]))
+            finally:
+                self.i2c.unlock()
         except Exception:
             pass
 
@@ -223,7 +257,7 @@ class WatchHardware:
                         except Exception:
                             pass
                 _bleio.adapter.enabled = False
-                time.sleep(0.2)
+                time.sleep(0.1)
                 _bleio.adapter.enabled = True
                 self.log("[BLE] BLE adaptér resetován.")
         except Exception as err:

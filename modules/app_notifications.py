@@ -1,7 +1,14 @@
-# file: app_notifications.py
 import displayio
 import terminalio
 from adafruit_display_text import label
+
+# Statická převodní mapa pro diakritiku (vytvoří se jen jednou v RAM)
+_CZ_MAP = {
+    ord(c): r for c, r in zip(
+        'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ',
+        'acdeeinorstuuyzACDEEINORSTUUYZ'
+    )
+}
 
 class AppNotifications:
     def __init__(self, max_notif=15):
@@ -23,15 +30,15 @@ class AppNotifications:
         self.group.append(self.status_lbl)
 
         # Aplikace
-        self.app_lbl = label.Label(terminalio.FONT, text="Aplikace: ---", color=0x00D0FF, scale=1, x=15, y=85)
+        self.app_lbl = label.Label(terminalio.FONT, text="App: ---", color=0x00D0FF, scale=1, x=15, y=75)
         self.group.append(self.app_lbl)
 
-        # Nadpis zprávy
-        self.title_lbl = label.Label(terminalio.FONT, text="Zadna zprava", color=0xFFD700, scale=1, x=15, y=115)
+        # Titulek/Odesílatel
+        self.title_lbl = label.Label(terminalio.FONT, text="Zadna zprava", color=0xFFD700, scale=1, x=15, y=100)
         self.group.append(self.title_lbl)
 
-        # Text zprávy
-        self.msg_lbl = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=1, x=15, y=140)
+        # Text zprávy (s podporou více řádků pro delší text)
+        self.msg_lbl = label.Label(terminalio.FONT, text="", color=0xFFFFFF, scale=1, x=15, y=125, line_spacing=1.1)
         self.group.append(self.msg_lbl)
 
         # Navigace
@@ -46,53 +53,73 @@ class AppNotifications:
         self.group.append(back_lbl)
 
     def strip_diacritics(self, text):
-        """Převede české znaky s diakritikou na čisté ASCII ekvivalenty"""
+        """Rychlé odstranění české diakritiky bez zbytečné alokace RAM"""
         if not text:
             return ""
-        
-        preklady = {
-            'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ':
-            'acdeeinorstuuyzACDEEINORSTUUYZ'
-        }
-        
-        # Jednoduchá výměna znaků
-        vystup = []
-        # Mapa pro rychlý převod
-        smap = {
-            'áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'[i]: 'acdeeinorstuuyzACDEEINORSTUUYZ'[i]
-            for i in range(len('áčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ'))
-        }
-        
-        for znak in text:
-            vystup.append(smap.get(znak, znak))
-            
-        return "".join(vystup)
+        return str(text).translate(_CZ_MAP)
+
+    def _wrap_text(self, text, max_chars_per_line=26, max_lines=3):
+        """Jednoduché zalamování textu na více řádků bez složitých knihoven"""
+        if not text:
+            return ""
+        words = text.split(" ")
+        lines = []
+        current_line = ""
+
+        for word in words:
+            if len(current_line) + len(word) + 1 <= max_chars_per_line:
+                current_line += (" " if current_line else "") + word
+            else:
+                lines.append(current_line)
+                current_line = word
+                if len(lines) >= max_lines:
+                    break
+        if current_line and len(lines) < max_lines:
+            lines.append(current_line)
+
+        return "\n".join(lines)
 
     def update_status(self, text, color=0xFFFFFF):
         self.status_lbl.text = f"BLE: {text}"
         self.status_lbl.color = color
 
     def add_notification(self, app_name, title, message=""):
-        if "mobilephone" in app_name.lower():
+        """Přidá notifikaci. Bezpečně zvládá 2 i 3 argumenty."""
+        # Pokud přišel f-string ze starého runtime: "Titul: Zpráva" v argumentu 'title'
+        if not message and ":" in title:
+            parts = title.split(":", 1)
+            title = parts[0].strip()
+            message = parts[1].strip()
+
+        app_lower = app_name.lower()
+        if "mobilephone" in app_lower:
             app_nazev = "Prichozi Hovor"
-        elif "mobilesms" in app_name.lower():
+        elif "mobilesms" in app_lower:
             app_nazev = "Zprava SMS"
+        elif "picaboo" in app_lower or "snapchat" in app_lower:
+            app_nazev = "Snapchat"
         else:
-            app_nazev = app_name[:18]
+            app_nazev = app_name[:16]
 
         zobrazit_title = title if title else "Zprava"
         
-        # Očistíme titulek i text zprávy od diakritiky
+        # Očistíme texty od diakritiky
         cisty_title = self.strip_diacritics(zobrazit_title)
         cisty_msg = self.strip_diacritics(message)
 
+        # Zalamování zprávy na 3 řádky (max ~75 znaků)
+        formatted_msg = self._wrap_text(cisty_msg, max_chars_per_line=26, max_lines=3)
+
         new_item = {
             "app": app_nazev,
-            "title": cisty_title[:20],
-            "msg": cisty_msg[:25] if cisty_msg else ""
+            "title": cisty_title[:22],
+            "msg": formatted_msg
         }
+        
+        # Vložení na začátek (nejnovější první)
         self.notifications.insert(0, new_item)
 
+        # Ochrana paměti (Prstencový buffer)
         if len(self.notifications) > self.max_notif:
             self.notifications.pop()
 
@@ -109,7 +136,7 @@ class AppNotifications:
         total = len(self.notifications)
         if total == 0:
             self.count_lbl.text = "0 / 0"
-            self.app_lbl.text = "Aplikace: ---"
+            self.app_lbl.text = "App: ---"
             self.title_lbl.text = "Seznam smazan"
             self.msg_lbl.text = ""
             return
@@ -121,11 +148,9 @@ class AppNotifications:
         self.msg_lbl.text = f"{item['msg']}"
 
     def handle_tap(self, x, y):
-        """Zpětná kompatibilita pro starší volání z code.py"""
         return self.handle_event("TAP", x, y)
 
     def handle_event(self, ev_type, x, y):
-        """Obsluha klepnutí i gest švihu"""
         total = len(self.notifications)
 
         # GESTO 1: Švih shora dolů -> Smazat všechny notifikace
@@ -139,16 +164,19 @@ class AppNotifications:
 
         # KLEPNUTÍ (TAP)
         elif ev_type == "TAP":
+            # Tlačítko STARŠÍ
             if 160 <= y <= 195 and x < 120:
                 if self.current_index < total - 1:
                     self.current_index += 1
                     self.render_current()
 
+            # Tlačítko NOVĚJŠÍ
             elif 160 <= y <= 195 and x >= 120:
                 if self.current_index > 0:
                     self.current_index -= 1
                     self.render_current()
 
+            # Zpět do menu
             elif y > 200:
                 return "BACK"
 
