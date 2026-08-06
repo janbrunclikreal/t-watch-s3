@@ -42,12 +42,16 @@ class WatchHardware:
             import adafruit_ble_apple_notification_center as ancs
 
             self.radio = adafruit_ble.BLERadio()
-            # DNEŠNÍ ÚPRAVA: Explicitní název zařízení pro iOS
-            self.radio.name = "T-Watch-S3"
+            
+            # ZKRÁCENÝ NÁZEV: Vejde se do 31bajtového limitu vedle 128bitového ANCS UUID
+            self.radio.name = "TW-S3"
+            
             self.SolicitServicesAdvertisement = SolicitServicesAdvertisement
             self.ancs = ancs
             self.ble_available = True
-        except Exception:
+            self.log("[BLE] BLE adaptér připraven (Solicit ANCS).")
+        except Exception as err:
+            self.log(f"[BLE-INIT-ERR] {err}")
             self.ble_available = False
 
     def _initialize_pmu(self):
@@ -239,14 +243,17 @@ class WatchHardware:
             pass
 
     def create_ancs_advertisement(self):
-        """DNEŠNÍ ÚPRAVA: Přidáno jméno a connectable pro správné spárování s iOS."""
         if not self.ble_available or self.SolicitServicesAdvertisement is None or self.ancs is None:
             return None
-        advertisement = self.SolicitServicesAdvertisement()
-        advertisement.complete_name = "T-Watch-S3"
-        advertisement.connectable = True
-        advertisement.solicited_services.append(self.ancs.AppleNotificationCenterService)
-        return advertisement
+
+        try:
+            # Ponecháme čistý SolicitServicesAdvertisement
+            advertisement = self.SolicitServicesAdvertisement()
+            advertisement.solicited_services.append(self.ancs.AppleNotificationCenterService)
+            return advertisement
+        except Exception as err:
+            self.log(f"[BLE-ADV-ERR] Selhalo vytvoření inzerce: {err}")
+            return None
 
     def cleanup_ble(self):
         try:
