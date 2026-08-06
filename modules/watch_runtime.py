@@ -32,8 +32,9 @@ class WatchRuntime:
         self.step_db = StepDatabase(self.hardware.DB_FILE, self.hardware.log)
         self.cpu_usage_cache = 0
         self.watchface.show_on(self.hardware.display)
-        # Doporučeno: Nastavit stabilní frekvenci a neměnit ji za chodu během vykreslování
-        self.hardware.set_cpu_frequency(160000000)
+        
+        # Nastavení stabilní úsporné frekvence CPU (80 MHz)
+        self.hardware.set_cpu_frequency(80000000)
 
     def memory_cleanup(self, reason=""):
         gc.collect()
@@ -43,27 +44,26 @@ class WatchRuntime:
             self.hardware.log(f"[MEM] Uvolněno | Volno: {gc.mem_free() // 1024} kB")
 
     async def wake_display_async(self):
-        """Neblokující rozsvícení displeje přes asyncio."""
+        """Neblokující rozsvícení displeje (připraveno pro 80 % jasu)."""
         self.state.register_activity()
         if not self.state.display_awake:
             self.state.display_awake = True
-            for brightness in range(0, 91, 20):
+            for brightness in range(0, 81, 20):
                 self.hardware.set_brightness(brightness)
                 await asyncio.sleep(0.01)
 
     async def sleep_display_async(self):
-        """Neblokující zhasnutí displeje přes asyncio."""
+        """Neblokující zhasnutí displeje."""
         if self.state.display_awake:
-            for brightness in range(90, -1, -10):
+            for brightness in range(80, -1, -10):
                 self.hardware.set_brightness(brightness)
                 await asyncio.sleep(0.01)
             self.state.display_awake = False
 
     def wake_display(self):
-        """Synchronní záloha pro případy, kdy nelze použít await."""
         self.state.register_activity()
         if not self.state.display_awake:
-            self.hardware.set_brightness(90)
+            self.hardware.set_brightness(80)
             self.state.display_awake = True
 
     def show_watchface(self, cleanup_reason=None):
@@ -141,22 +141,27 @@ class WatchRuntime:
         while True:
             try:
                 radio = self.hardware.radio
+                
+                if advertisement is None:
+                    advertisement = self.hardware.create_ancs_advertisement()
+
+                # Pokud je inzerce v pauze, šetříme CPU
                 if self.state.ble_pause_advertising and not radio.connected:
                     self.watchface.update_status("W:off B:sleep")
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(2.0)
                     continue
 
-                if not radio.connected and not radio.advertising:
+                if not radio.connected and not radio.advertising and advertisement is not None:
                     self.hardware.log("[BLE] Spouštím inzerci pro ANCS...")
                     self.watchface.update_status("W:off B:adv-iOS")
                     radio.start_advertising(advertisement)
                     self.state.ble_adv_start_time = time.monotonic()
 
-                while not radio.connected:
-                    if (time.monotonic() - self.state.ble_adv_start_time) > 30:
-                        self.hardware.log("[BLE-POWER] Timeout inzerce (30 s) vypršel! Vypínám BLE rádio...")
-                        if radio.advertising:
-                            radio.stop_advertising()
+                while not radio.connected and radio.advertising:
+                    # Timeout zkrácen na 10 sekund
+                    if (time.monotonic() - self.state.ble_adv_start_time) > 10:
+                        self.hardware.log("[BLE-POWER] Timeout inzerce (10 s) vypršel! Vypínám BLE rádio...")
+                        radio.stop_advertising()
                         self.state.ble_pause_advertising = True
                         self.watchface.update_status("W:off B:sleep")
                         break
@@ -168,51 +173,53 @@ class WatchRuntime:
                     if radio.advertising:
                         radio.stop_advertising()
 
-                    for connection in list(radio.connections):
-                        if self.hardware.ancs.AppleNotificationCenterService not in connection:
-                            continue
+                    # OŠETŘENÍ CHYBY NoneType isn't iterable:
+                    connections = radio.connections
+                    if connections is not None:
+                        for connection in list(connections):
+                            if self.hardware.ancs.AppleNotificationCenterService not in connection:
+                                continue
 
-                        try:
-                            if not connection.paired:
-                                self.hardware.log("[BLE] Dojednávám šifrování relace...")
-                                connection.pair()
-                                self.hardware.log("[BLE] Spárováno!")
-                        except Exception as err:
-                            self.hardware.log(f"[BLE-PAIR-WARN] {err}")
-
-                        while connection.connected:
                             try:
-                                ancs_service = connection[self.hardware.ancs.AppleNotificationCenterService]
-                                active_notifications = ancs_service.active_notifications
-                                if active_notifications:
-                                    for notif_id in list(active_notifications.keys()):
-                                        if notif_id in known_notifications:
-                                            continue
-
-                                        known_notifications.add(notif_id)
-                                        if len(known_notifications) > 30:
-                                            known_notifications.clear()
-                                            known_notifications.add(notif_id)
-
-                                        notification = active_notifications[notif_id]
-                                        app_id = getattr(notification, "app_id", "Aplikace") or "Aplikace"
-                                        title = getattr(notification, "title", "") or ""
-                                        message = getattr(notification, "message", "") or ""
-                                        
-                                        self.hardware.log(f"[ANCS-NOTIF] {app_id} | {title}: {message}")
-                                        self.hardware.play_effect(14)
-                                        await self.wake_display_async()
-                                        
-                                        try:
-                                            self.notif_app.add_notification(app_id, f"{title}: {message}")
-                                        except Exception:
-                                            pass
+                                if not connection.paired:
+                                    self.hardware.log("[BLE] Dojednávám šifrování relace...")
+                                    connection.pair()
+                                    self.hardware.log("[BLE] Spárováno!")
                             except Exception as err:
-                                self.hardware.log(f"[ANCS-ERR] {err}")
-                                await asyncio.sleep(1.0)
-                            
-                            # Uvolníme CPU pro ostatní tasky
-                            await asyncio.sleep(0.5)
+                                self.hardware.log(f"[BLE-PAIR-WARN] {err}")
+
+                            while connection.connected:
+                                try:
+                                    ancs_service = connection[self.hardware.ancs.AppleNotificationCenterService]
+                                    active_notifications = ancs_service.active_notifications
+                                    if active_notifications:
+                                        for notif_id in list(active_notifications.keys()):
+                                            if notif_id in known_notifications:
+                                                continue
+
+                                            known_notifications.add(notif_id)
+                                            if len(known_notifications) > 30:
+                                                known_notifications.clear()
+                                                known_notifications.add(notif_id)
+
+                                            notification = active_notifications[notif_id]
+                                            app_id = getattr(notification, "app_id", "Aplikace") or "Aplikace"
+                                            title = getattr(notification, "title", "") or ""
+                                            message = getattr(notification, "message", "") or ""
+                                            
+                                            self.hardware.log(f"[ANCS-NOTIF] {app_id} | {title}: {message}")
+                                            self.hardware.play_effect(14)
+                                            await self.wake_display_async()
+                                            
+                                            try:
+                                                self.notif_app.add_notification(app_id, f"{title}: {message}")
+                                            except Exception:
+                                                pass
+                                except Exception as err:
+                                    self.hardware.log(f"[ANCS-ERR] {err}")
+                                    await asyncio.sleep(1.0)
+                                
+                                await asyncio.sleep(0.5)
 
                     self.hardware.log("[BLE] Spojení ztraceno. Obnovuji inzerci...")
                     self.watchface.update_status("W:off B:off")
@@ -241,6 +248,10 @@ class WatchRuntime:
                     if irq_status in (2, 3):
                         self.hardware.log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
                         self.state.register_activity()
+                        
+                        # STISK KORUNKY OPĚT OBNOVÍ HLEDÁNÍ TELEFONU (10 S)
+                        self.state.ble_pause_advertising = False
+                        
                         if not self.state.display_awake:
                             await self.wake_display_async()
                             self.hardware.play_effect(1)
@@ -254,7 +265,8 @@ class WatchRuntime:
                         await asyncio.sleep(0.4)
             except Exception as err:
                 self.hardware.log(f"[CROWN-ERR] {err}")
-            await asyncio.sleep(0.05 if self.state.display_awake else 0.2)
+            
+            await asyncio.sleep(0.05 if self.state.display_awake else 0.3)
 
     async def sprava_napajeni_task(self):
         self.hardware.log("[Task] Správa napájení spuštěna.")
@@ -309,7 +321,8 @@ class WatchRuntime:
                         self.step_db.save_day(self.state.last_date_str, self.state.steps_today)
             except Exception as err:
                 self.hardware.log(f"[KROKY-ERR] {err}")
-            await asyncio.sleep(0.2)
+            
+            await asyncio.sleep(0.2 if self.state.display_awake else 0.4)
 
     async def graficka_smycka_hodin_task(self):
         self.hardware.log("[Task] Grafická smyčka hodin spuštěna.")
@@ -353,7 +366,7 @@ class WatchRuntime:
                     self.hardware.log(f"[GUI-ERR] {err}")
                 await asyncio.sleep(0.2)
             else:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1.0)
 
     async def dotyk_a_gui_task(self):
         self.hardware.log("[Task] Dotyková obsluha spuštěna.")
@@ -397,7 +410,8 @@ class WatchRuntime:
                             self.show_menu("Zavření aplikací")
             except Exception as err:
                 self.hardware.log(f"[TOUCH-ERR] {err}")
-            await asyncio.sleep(0.04)
+            
+            await asyncio.sleep(0.04 if self.state.display_awake else 0.2)
 
     async def main(self):
         self.hardware.log("Spouštím optimalizovaný CircuitPython OS pro T-Watch-S3...")
@@ -428,17 +442,28 @@ class WatchRuntime:
 
 def run():
     runtime = WatchRuntime()
+    should_reload = False
+    
     try:
         asyncio.run(runtime.main())
     except KeyboardInterrupt:
-        runtime.hardware.log("[REPL] Přerušeno uživatelem.")
+        print("\n[REPL] Přerušeno uživatelem (Ctrl+C). Provádím bezpečné odpojení...")
+        try:
+            runtime.cleanup()
+        except Exception as e:
+            print(f"[CLEANUP-ERR] {e}")
+
     except MemoryError:
-        runtime.hardware.log("[CRITICAL] Došla paměť!")
-        runtime.memory_cleanup("Nouzový úklid RAM")
-        supervisor.reload()
+        print("[CRITICAL] Došla paměť RAM! Provádím hardwarový reset...")
+        time.sleep(0.1)
+        import microcontroller
+        microcontroller.reset()
+
     except Exception as err:
-        runtime.hardware.log(f"[CRASH] Neošetřená chyba: {type(err).__name__}: {err}")
-        time.sleep(1)
-        supervisor.reload()
+        print(f"[CRASH] Neošetřená chyba: {type(err).__name__}: {err}")
+        should_reload = True
+
     finally:
-        runtime.cleanup()
+        if should_reload:
+            time.sleep(1)
+            supervisor.reload()

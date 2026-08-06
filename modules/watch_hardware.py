@@ -42,6 +42,8 @@ class WatchHardware:
             import adafruit_ble_apple_notification_center as ancs
 
             self.radio = adafruit_ble.BLERadio()
+            # DNEŠNÍ ÚPRAVA: Explicitní název zařízení pro iOS
+            self.radio.name = "T-Watch-S3"
             self.SolicitServicesAdvertisement = SolicitServicesAdvertisement
             self.ancs = ancs
             self.ble_available = True
@@ -155,7 +157,6 @@ class WatchHardware:
             if self.pmu is not None:
                 if hasattr(self.pmu, "is_vbus_in"):
                     return self.pmu.is_vbus_in()
-                # Alternativní načtení registru stavu napájení
                 status = self.read_register(self.PMU_ADDRESS, 0x00)
                 return (status & 0x20) != 0
         except Exception:
@@ -191,7 +192,6 @@ class WatchHardware:
 
         try:
             x_val, y_val, z_val = self.bma_sensor.acceleration
-            # Prahová hodnota 1.18 G převrácená na druhou mocninu = 1.3924
             acc_sum = (x_val * x_val) + (y_val * y_val) + (z_val * z_val)
             now = time.monotonic()
 
@@ -239,9 +239,12 @@ class WatchHardware:
             pass
 
     def create_ancs_advertisement(self):
+        """DNEŠNÍ ÚPRAVA: Přidáno jméno a connectable pro správné spárování s iOS."""
         if not self.ble_available or self.SolicitServicesAdvertisement is None or self.ancs is None:
             return None
         advertisement = self.SolicitServicesAdvertisement()
+        advertisement.complete_name = "T-Watch-S3"
+        advertisement.connectable = True
         advertisement.solicited_services.append(self.ancs.AppleNotificationCenterService)
         return advertisement
 

@@ -1,6 +1,10 @@
 import storage
 import supervisor
 
+# 0. Při jakékoliv nezachycené chybě v code.py nečekat na REPL, ale rovnou zrestartovat
+supervisor.set_next_stack_limit(4096)
+supervisor.runtime.autoreload = False  # Vypne auto-reload při změně souborů (na hodinkách nepotřebuješ)
+
 print("[BOOT] LILYGO T-Watch-S3 starting...")
 
 # 1. Trvale vypneme simulaci USB flash disku (MSC)
