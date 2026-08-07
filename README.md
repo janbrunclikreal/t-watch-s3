@@ -1,283 +1,223 @@
-# T-Watch S3 – Optimalizovaný CircuitPython OS
+# T-Watch S3 pro CircuitPython
 
-`code.py` je firmware / operační systém pro chytré hodinky **LILYGO T-Watch S3**
-běžící na **CircuitPythonu**. Jde o asynchronní runtime (vlastní `asyncio` tasky),
-který obsluhuje ciferník, dotykové menu, krokoměr, BLE notifikace z iOS (ANCS),
-NTP synchronizaci, haptickou odezvu a chytrou správu napájení.
+Firmware pro LILYGO T-Watch S3 postavený nad CircuitPythonem. Projekt spouští jednoduchý asynchronní runtime pro ciferník, menu, diagnostiku hardware, krokoměr a BLE notifikace z iPhonu přes ANCS.
 
-> Cílový hardware: T-Watch-S3 (ESP32-S3) s **displejem**, **dotykovou vrstvou**,
-> **AXP2101** (PMU), **PCF8563** (RTC), **BMA423** (akcelerometr),
-> **DRV2605** (haptika) a **Wi-Fi / BLE** modulem.
+Repozitář dnes odpovídá stavu funkčního základu systému s několika jednoduchými aplikacemi. Ne všechny obrazovky jsou plnohodnotné aplikace; `Moblin` je zatím jen statická obrazovka bez aktivní integrace.
 
----
+## Co projekt aktuálně umí
 
-## 🧭 Hlavní funkce
+- Zobrazit watchface s časem, datem, stavem Wi‑Fi/BLE, baterií, RAM, napětím a odhadovaným vytížením hlavní smyčky.
+- Po startu synchronizovat čas přes Wi‑Fi a NTP, pokud RTC nemá platný čas nebo je zapnuté `FORCE_NTP_SYNC`.
+- Číst čas z RTC PCF8563 a běžet i offline, pokud už je RTC platné.
+- Měřit kroky z akcelerometru BMA423 a ukládat denní historii do `/kroky_db.json`.
+- Přijímat iOS notifikace přes BLE ANCS, zobrazit je na displeji a upozornit vibrací.
+- Uspat displej po neaktivitě a probudit ho dotykem nebo korunkou.
+- Nabídnout jednoduché aplikace `Notifications`, `HW Test` a `Moblin`.
 
-| Oblast | Co dělá |
-|---|---|
-| ⌚ **Watchface** | Ciferník s časem, datem, Wi-Fi/BLE stavem, baterií, CPU loadem, RAM a napětím |
-| 📱 **Bluetooth ANCS** | Příjem notifikací z iPhonu (Apple Notification Center Service) přes BLE |
-| 🚶 **Krokoměr** | Počítání kroků z akcelerometru BMA423 s denním přepisem a historií 90 dní |
-| ⏰ **RTC (PCF8563)** | Hardwarové hodiny s možností zálohy bez Wi-Fi; NTP sync přes evrop.pool.ntp.org |
-| 📡 **Wi-Fi NTP sync** | Jednorázová synchronizace času z NTP při startu (pokud RTC nemá platný čas) |
-| 🎛 **Menu & Aplikace** | `Moblin`, `HwTest`, `Notifications` – vlastní `Group`-y s dotykovou obsluhou |
-| 🔋 **Správa napájení** | Dynamická frekvence CPU (80 / 160 / 240 MHz), sleep displeje, vypínání Wi-Fi/BLE |
-| 🔘 **Hardwarová korunka** | Krátký stisk = návrat na ciferník / uspání displeje (přes IRQ registr AXP2101) |
-| 📳 **Haptika DRV2605** | Krátká vibrace na notifikaci, na milník 1 000 kroků a na vyčištění notifikací |
-| 📊 **Diagnostika** | Výpis do REPLu s milisekundovým časovým razítkem `[HH:MM:SS.mmm]` |
+## Co je dobré vědět
 
----
+- `Moblin` není napojený na žádnou službu; jde jen o placeholder obrazovku.
+- BLE notifikace jsou určené pro iPhone a ANCS. Android není podporovaný.
+- `boot.py` vypíná USB mass storage, takže po nasazení není disk `CIRCUITPY` běžně dostupný přes USB.
 
-## 🗂 Architektura
+## Architektura
 
-Kód je rozdělený do objektů `WatchRuntime`, `WatchHardware`, `WatchFaceUI`, `StepDatabase` a samostatných app tříd. `WatchRuntime.main()` pak spouští nezávislé `asyncio` korutiny:
+Entrypoint je velmi tenký:
 
+```py
+import sys
+
+sys.path.append("/modules")
+
+from watch_runtime import run
+
+run()
 ```
+
+Hlavní logika je v `WatchRuntime`, který spouští tyto tasky:
+
+```py
 asyncio.gather(
-    hlidac_korunky_task(),          # IRQ z AXP2101 – korunka / tlačítko
-    sprava_napajeni_task(),         # Auto-sleep displeje (10 s neaktivity)
-    graficka_smycka_hodin_task(),   # Update textů ciferníku, CPU load
-    wifi_cas_sync_task(),           # Jednorázový NTP sync
-    pocitadlo_kroku_task(),         # BMA423 krokoměr + zápis do /kroky_db.json
-    dotyk_a_gui_task(),             # TouchController + přepínání stavů
-    ble_ancs_task(),                # iOS notifikace přes ANCS
+    hlidac_korunky_task(),
+    sprava_napajeni_task(),
+    graficka_smycka_hodin_task(),
+    wifi_cas_sync_task(),
+    pocitadlo_kroku_task(),
+    dotyk_a_gui_task(),
+    ble_ancs_task(),
 )
 ```
 
-Stavový automat (top-level `current_state`):
+Stavy UI:
 
-```
-WATCHFACE ⇄ MENU ⇄ MOBLIN
-            ⇄ HWTEST
-            ⇄ NOTIF
-```
-
-Korunka vždycky skočí zpět na `WATCHFACE`. Pokud už na něm jste, displej se
-plynule uspí přes `display.brightness`.
-
----
-
-## 📁 Požadované soubory na zařízení (`CIRCUITPY`)
-
-```
-/code.py                      # tenký entrypoint, spouští watch_runtime.run()
-/modules/watch_runtime.py      # WatchRuntime + async tasky
-/modules/watch_hardware.py     # WatchHardware (PMU, RTC, BLE, BMA423, haptika)
-/modules/watch_ui.py           # WatchFaceUI
-/modules/watch_state.py        # sdílený stav hodinek
-/modules/watch_storage.py      # StepDatabase pro /kroky_db.json
-/modules/touch.py              # TouchController (I2C dotykový driver)
-/modules/app_menu.py           # AppMenu
-/modules/app_moblin.py         # AppMoblin
-/modules/app_hwtest.py         # AppHwTest
-/modules/app_notifications.py  # AppNotifications
-/kroky_db.json                 # vytvoří se automaticky
-/lib/adafruit_ble/__init__.mpy
-/lib/adafruit_ble/advertising/__init__.mpy
-/lib/adafruit_ble/advertising/adafruit.mpy
-/lib/adafruit_ble/advertising/standard.mpy
-/lib/adafruit_ble/attributes/__init__.mpy
-/lib/adafruit_ble/characteristics/__init__.mpy
-/lib/adafruit_ble/characteristics/float.mpy
-/lib/adafruit_ble/characteristics/int.mpy
-/lib/adafruit_ble/characteristics/json.mpy
-/lib/adafruit_ble/characteristics/stream.mpy
-/lib/adafruit_ble/characteristics/string.mpy
-/lib/adafruit_ble/services/__init__.mpy
-/lib/adafruit_ble/services/circuitpython.mpy
-/lib/adafruit_ble/services/microbit.py
-/lib/adafruit_ble/services/nordic.mpy
-/lib/adafruit_ble/services/sphero.mpy
-/lib/adafruit_ble/services/standard/__init__.mpy
-/lib/adafruit_ble/services/standard/device_info.mpy
-/lib/adafruit_ble/services/standard/hid.mpy
-/lib/adafruit_ble/uuid/__init__.mpy
-/lib/adafruit_ble_apple_notification_center.mpy
-/lib/adafruit_bus_device/__init__.py
-/lib/adafruit_bus_device/i2c_device.mpy
-/lib/adafruit_bus_device/spi_device.mpy
-/lib/adafruit_display_text/__init__.mpy
-/lib/adafruit_display_text/bitmap_label.mpy
-/lib/adafruit_display_text/label.mpy
-/lib/adafruit_display_text/outlined_label.mpy
-/lib/adafruit_display_text/scrolling_label.mpy
-/lib/adafruit_display_text/text_box.mpy
-/lib/adafruit_drv2605.mpy
-/lib/adafruit_ntp.mpy
-/lib/adafruit_pcf8563/clock.mpy
-/lib/adafruit_pcf8563/pcf8563.mpy
-/lib/adafruit_pcf8563/timer.mpy
-/lib/adafruit_ticks.mpy
-/lib/adafruit_touchscreen.mpy
-/lib/asyncio/__init__.mpy
-/lib/asyncio/core.mpy
-/lib/asyncio/event.mpy
-/lib/asyncio/funcs.mpy
-/lib/asyncio/lock.mpy
-/lib/asyncio/stream.mpy
-/lib/asyncio/task.mpy
-/lib/asyncio/traceback.mpy
-/lib/touch.py
-
+```text
+WATCHFACE <-> MENU <-> MOBLIN
+                  <-> HWTEST
+                  <-> NOTIF
 ```
 
-> Moduly v `/modules` musí odpovídat verzi vašeho CircuitPythonu
-> (doporučeno **10.3.x** pro ESP32-S3).
+Korunka vždy vrací uživatele na watchface. Pokud už je watchface aktivní, další stisk displej uspí.
 
----
+## Ovládání
 
-## 🔧 Konfigurace (env proměnné)
+- Na watchface otevře menu klepnutí i vertikální swipe.
+- V `Notifications` swipe dolů smaže všechny notifikace.
+- V `Notifications` swipe nahoru vrací zpět do menu.
+- V `Notifications` spodní tlačítka listují mezi staršími a novějšími zprávami.
+- V `HW Test` a `Moblin` spodní část displeje vrací zpět do menu.
 
-Nastavuje se přes `settings.toml` v `CIRCUITPY`, nebo přes `os.getenv()`:
+## Aktuální chování systému
+
+- CPU je při startu nastavené na fixních `80 MHz`.
+- Jas displeje se běžně používá na `80 %` a při uspání plynule klesá na `0 %`.
+- Displej se uspí po `10 s` neaktivity, pokud neběží Wi‑Fi sync a není připojené USB.
+- BLE reklama pro ANCS se po `10 s` bez připojení pozastaví a obnoví se další aktivitou uživatele.
+- Historie notifikací v UI drží maximálně `15` položek.
+- Runtime si kvůli paměti drží omezenou množinu již zpracovaných ANCS ID.
+
+## Struktura projektu
+
+```text
+boot.py
+code.py
+kroky_db.json
+settings.toml
+modules/
+  app_hwtest.py
+  app_menu.py
+  app_moblin.py
+  app_notifications.py
+  watch_hardware.py
+  watch_runtime.py
+  watch_state.py
+  watch_storage.py
+  watch_ui.py
+lib/
+  touch.py
+test/
+  i2c-scanner.py
+  start-boot.py
+  test-bma423.py
+  test-dotik.py
+  test-wifi.py
+```
+
+Poznámka k dotyku: runtime importuje `TouchController` z `touch`, což v tomto repozitáři znamená `lib/touch.py`, ne soubor v `modules/`.
+
+## Hardware a I2C
+
+Projekt počítá s hardwarem LILYGO T-Watch S3 a s těmito periferiemi:
+
+- displej přes `board.DISPLAY`
+- dotykový kontroler přes `board.TOUCH_I2C()`
+- PMU `AXP2101`
+- RTC `PCF8563`
+- haptika `DRV2605`
+- akcelerometr `BMA423`
+- Wi‑Fi a BLE na ESP32-S3
+
+Použité I2C adresy:
+
+| Adresa | Zařízení |
+|---|---|
+| `0x34` | AXP2101 |
+| `0x51` | PCF8563 |
+| `0x5A` | DRV2605 |
+| `0x19` | BMA423 |
+| `0x38` | FocalTouch |
+
+## Závislosti
+
+V `lib/` jsou jen některé knihovny. Aktuální kód očekává zejména tyto závislosti:
+
+- `adafruit_ntp`
+- `adafruit_drv2605`
+- `adafruit_pcf8563`
+- `adafruit_ble`
+- `adafruit_ble_apple_notification_center`
+- `adafruit_display_text`
+- `adafruit_focaltouch`
+- `axp2101`
+- `bma423`
+- `asyncio` pro CircuitPython
+
+Pokud některá z nich chybí, runtime často poběží dál v omezeném režimu a zapíše chybu do logu.
+
+## Konfigurace
+
+Konfigurace se čte ze `settings.toml` přes `os.getenv()`:
 
 ```toml
-# settings.toml
-CIRCUITPYTHON_WIFI_SSID = "vas-wifi"
-CIRCUITPYTHON_WIFI_PASSWORD = "vas-heslo"
-TIMEZONE_OFFSET = 2            # SELČ / letní čas ČR
-FORCE_NTP_SYNC = true          # Vynutí NTP sync i při validním RTC
+CIRCUITPYTHON_WIFI_SSID = "TVOJE_WIFI"
+CIRCUITPYTHON_WIFI_PASSWORD = "TVOJE_HESLO"
+TIMEZONE_OFFSET = "2"
+FORCE_NTP_SYNC = "true"
 ```
 
 | Proměnná | Význam |
 |---|---|
-| `CIRCUITPYTHON_WIFI_SSID` | SSID Wi-Fi sítě (pro NTP) |
-| `CIRCUITPYTHON_WIFI_PASSWORD` | Heslo k Wi-Fi |
-| `TIMEZONE_OFFSET` | Offset vůči UTC v hodinách (např. `2` pro ČR) |
-| `FORCE_NTP_SYNC` | `true/false`; při `true` vždy provede NTP sync při startu |
+| `CIRCUITPYTHON_WIFI_SSID` | Wi‑Fi síť pro NTP synchronizaci |
+| `CIRCUITPYTHON_WIFI_PASSWORD` | Heslo k Wi‑Fi |
+| `TIMEZONE_OFFSET` | Posun vůči UTC v hodinách |
+| `FORCE_NTP_SYNC` | Vynutí NTP sync i při platném RTC |
 
-Pokud RTC již obsahuje platný čas (`year >= 2026`), **Wi-Fi sync se přeskočí**
-a modul běží zcela offline.
+RTC je považované za platné, pokud je `tm_year >= 2026`.
 
-Pro jednorázové srovnání špatného času v RTC nastavte `FORCE_NTP_SYNC = true`,
-restartujte hodinky a po úspěšné synchronizaci vraťte zpět na `false`.
+## Nasazení do hodinek
 
----
+1. Nahrajte kompatibilní CircuitPython pro LILYGO T-Watch S3.
+2. Zkopírujte `code.py`, adresář `modules/` a potřebné knihovny do `CIRCUITPY`.
+3. Doplňte `settings.toml`.
+4. Pokud chcete zachovat možnost přímého přístupu k disku `CIRCUITPY`, upravte nebo dočasně vynechte `boot.py`.
+5. Restartujte zařízení.
 
-## 🚀 Instalace
+`boot.py` aktuálně:
 
-1. **Připravte T-Watch S3**
-   * Stáhněte [CircuitPython UF2 pro ESP32-S3](https://circuitpython.org/board/lilygo_twatch_s3/)
-     a flashněte jej přes bootloader (dvakrát rychle `RST`).
-2. **Nahrajte knihovny**
-   * Rozbalte `adafruit-circuitpython-bundle` a zkopírujte potřebné `.mpy`
-     do `/lib` na disku `CIRCUITPY`.
-3. **Přidejte vlastní moduly** (viz výše) do `/modules`.
-4. **Vložte `code.py` a `/modules`**
-   * Na `CIRCUITPY` nahrajte `code.py` i všechny Python soubory z adresáře `/modules`.
-5. **Nastavte `settings.toml`** (volitelně – pokud chcete Wi-Fi sync).
-6. **Restartujte hodinky** – měl by naskočit ciferník.
+- vypne USB mass storage přes `storage.disable_usb_drive()`
+- remountne interní filesystem pro zápis z Pythonu
 
----
+To je vhodné pro průběžné ukládání kroků, ale komplikuje další kopírování souborů přes USB.
 
-## 🛠 Hardwarové IO mapa (I²C)
+## Ukládání kroků
 
-| Adresa | Zařízení | Poznámka |
-|---|---|---|
-| `0x34` | AXP2101 | PMU (power management) |
-| `0x51` | PCF8563 | RTC hodiny reálného času |
-| `0x5A` | DRV2605 | Haptický driver (LRA motor) |
-| `0x19` | BMA423 | Akcelerometr + krokoměr |
+- Databáze kroků je v souboru `/kroky_db.json`.
+- Při startu se načte hodnota pro aktuální den z RTC.
+- Při změně dne se starý den uloží a počítadlo se vynuluje.
+- Databáze si drží maximálně posledních `90` dní.
+- Průběžné uložení probíhá po `1500` iteracích smyčky.
+- Pokud zápis selže kvůli read-only mountu, chyba se zaloguje a běh pokračuje.
 
-`board.I2C()` je sdílená sběrnice; driver AXP2101 navíc vyžaduje
-**přímé čtení IRQ registru** (`0x49`) přes `try_lock()` – v kódu je to
-řešeno bezpečným `try/finally` patternem.
+Detekce kroku v aktuálním kódu:
 
----
+- práh je `acc_sum > 1.3924`
+- debounce mezi kroky je `0.33 s`
+- při každých `1000` krocích se spustí haptický efekt `14`
 
-## 🔋 Profil spotřeby (orientačně)
+## BLE notifikace
 
-| Režim | CPU | Displej | BLE | Wi-Fi |
-|---|---|---|---|---|
-| Ciferník | 80 MHz | 90 % | reklama (iOS) | off |
-| Menu | 160 MHz | 90 % | reklama (iOS) | off |
-| Moblin | 240 MHz | 90 % | reklama (iOS) | off |
-| HwTest | 80 MHz | 90 % | reklama (iOS) | off |
-| Sleep | 80 MHz | 0 % | pause 30 s | off |
+- Používá se `SolicitServicesAdvertisement` pro Apple Notification Center Service.
+- Po připojení se runtime pokusí zařízení spárovat, pokud relace ještě není párovaná.
+- Příchozí notifikace vyvolá vibraci, probuzení displeje a otevření obrazovky notifikací.
+- Text se při zobrazení čistí od české diakritiky a zalamuje na více řádků.
 
-Displej se automaticky uspí po **10 s** neaktivity, pokud není připojeno USB
-a neprobíhá Wi-Fi sync.
+## Logování a ladění
 
----
+Projekt loguje do REPLu. Když RTC ještě není dostupné, používá prefix podle `time.monotonic()`. Jakmile je RTC inicializované, logy přepnou na skutečný čas.
 
-## 🧠 Krokoměr – detaily
+Pomocné skripty v `test/`:
 
-* Prahová hodnota: `magnitude > 1.18` (m/s²), s debounce **330 ms**.
-* Milník vibrace: každých **1 000 kroků** (`Effect(14)`).
-* Denní reset v `00:00` (přes RTC); předchozí den se uloží do
-  `/kroky_db.json` (max. **90 dní** historie, FIFO).
-* Zápis na flash probíhá každých **1500 smyček** (= ~5 min) a při přechodu
-  dne. Pokud je zařízení připojeno k PC (read-only mount), zápis se taktéž
-  přeskočí – počítadlo se nevytratí, jen se neuloží.
+- `test/i2c-scanner.py`
+- `test/test-wifi.py`
+- `test/test-bma423.py`
+- `test/test-dotik.py`
+- `test/start-boot.py`
 
----
+## Známé limity
 
-## 📡 BLE ANCS (iOS notifikace)
+- `Moblin` zatím nesdílí žádná data s runtime.
+- Externí drivery `axp2101` a `bma423` nejsou v repozitáři, je potřeba je dodat zvlášť.
+- Projekt nemá v repozitáři automatizované testy spustitelné na desktopu; ověření probíhá hlavně na zařízení.
 
-* Inzerce přes `SolicitServicesAdvertisement` – vyžaduje **spárování** v iOS
-  (Systém → Bluetooth → spárovat ručně).
-* Set aktivních notifikací je omezen na **50 ID** – pak se vyčistí, aby
-  nedošlo k memory leaku.
-* Pokud telefon není připojen **do 30 s**, reklama se vypne (úspora
-  energie) a obnoví se při další aktivitě.
-* Na příchozí notifikaci: krátká vibrace + probuzení displeje + uložení
-  do `AppNotifications` (přepne stav do `NOTIF`).
+## Licence
 
-> Android nativně ANCS nepodporuje. Pro Android by bylo nutné přidat
-> vlastní GATT službu (mimo rozsah tohoto firmware).
-
----
-
-## 🧪 Ladění a logy
-
-Připojte se přes **REPL** (Mu editor, `screen`, nebo `mpremote`). Výstup
-vypadá takto:
-
-```
-[12:34:56.421] [POWER] CPU nastaveno na 80 MHz.
-[12:34:57.103] [NTP-Sync] Připojuji se k Wi-Fi...
-[12:34:59.842] [NTP-Sync] RTC aktualizováno: 12:34
-[12:35:00.117] [BLE] Spouštím inzerci pro ANCS...
-[12:35:30.512] [BLE-POWER] Timeout inzerce (30 s) vypršel! Vypínám BLE rádio...
-[12:36:01.004] [TOUCH] Otevírám MENU
-[12:36:05.880] [MENU-TAP] Vybrána akce: MOBLIN
-```
-
-Každá zpráva má prefix `[MM:SS.mmm]` z `time.monotonic()`, dokud není
-dostupné RTC – pak se používá skutečný čas.
-
----
-
-## ❗ Řešení problémů
-
-| Problém | Řešení |
-|---|---|
-| Hodinky stále resetují | Zkontrolujte, zda je PMU AXP2101 inicializovaná (`PMU-INIT-ERR`). |
-| Displej je bílý / nic | `display.brightness` je 0 – stiskněte korunku. |
-| ANCS nefunguje | Na iPhonu zrušte párování a spárujte znovu přes Bluetooth nastavení. |
-| Notifikace nezobrazuje | Aplikace musí v iOS povolit „Oznámení“ pro Notification Center. |
-| `MemoryError` | Snížení `len(posledni_zname_notifikace)` limitu nebo vypnutí Moblin. |
-| Čas se nedaří synchronizovat | Wi-Fi přihlašovací údaje špatné, nebo blokován port 123 (NTP). |
-
----
-
-## 🧾 Licence
-
-Tento firmware je licencován pod **MIT licencí** – viz soubor [`LICENSE`](./LICENSE).
-
-```
-MIT License
-Copyright (c) 2026 Jan Brunclík
-```
-
-> Knihovny třetích stran (Adafruit, LILYGO, BMA423, aj.) se řídí jejich
-> vlastními licencemi.
-
----
-
-## ✅ TODO / Nápady
-
-- [ ] Vlastní ciferníky (bitmapa + analogové ručičky)
-- [ ] Počasí přes OpenWeatherMap (jen přes Wi-Fi)
-- [ ] Stopky / budík v menu
-- [ ] Aplikace „Music control" přes BLE GATT
-- [ ] OTA update přes Wi-Fi (`.uf2` z GitHubu)
+Projekt je licencovaný pod MIT, viz soubor `LICENSE`.
