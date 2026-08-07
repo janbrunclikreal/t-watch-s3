@@ -135,6 +135,7 @@ Nastavuje se přes `settings.toml` v `CIRCUITPY`, nebo přes `os.getenv()`:
 CIRCUITPYTHON_WIFI_SSID = "vas-wifi"
 CIRCUITPYTHON_WIFI_PASSWORD = "vas-heslo"
 TIMEZONE_OFFSET = 2            # SELČ / letní čas ČR
+FORCE_NTP_SYNC = true          # Vynutí NTP sync i při validním RTC
 ```
 
 | Proměnná | Význam |
@@ -142,9 +143,13 @@ TIMEZONE_OFFSET = 2            # SELČ / letní čas ČR
 | `CIRCUITPYTHON_WIFI_SSID` | SSID Wi-Fi sítě (pro NTP) |
 | `CIRCUITPYTHON_WIFI_PASSWORD` | Heslo k Wi-Fi |
 | `TIMEZONE_OFFSET` | Offset vůči UTC v hodinách (např. `2` pro ČR) |
+| `FORCE_NTP_SYNC` | `true/false`; při `true` vždy provede NTP sync při startu |
 
 Pokud RTC již obsahuje platný čas (`year >= 2026`), **Wi-Fi sync se přeskočí**
 a modul běží zcela offline.
+
+Pro jednorázové srovnání špatného času v RTC nastavte `FORCE_NTP_SYNC = true`,
+restartujte hodinky a po úspěšné synchronizaci vraťte zpět na `false`.
 
 ---
 

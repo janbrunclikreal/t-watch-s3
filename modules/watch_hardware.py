@@ -31,9 +31,17 @@ class WatchHardware:
         self.wifi_ssid = os.getenv("CIRCUITPYTHON_WIFI_SSID")
         self.wifi_pass = os.getenv("CIRCUITPYTHON_WIFI_PASSWORD")
         self.timezone_offset = int(os.getenv("TIMEZONE_OFFSET", "2"))
+        self.force_ntp_sync = self._parse_bool_env("FORCE_NTP_SYNC", False)
         self.drv = self._initialize_haptics()
         self.display = board.DISPLAY
         self.bma_sensor = self._initialize_bma423()
+
+    def _parse_bool_env(self, key, default=False):
+        value = os.getenv(key)
+        if value is None:
+            return default
+        value = value.strip().lower()
+        return value in ("1", "true", "yes", "on")
 
     def _initialize_ble(self):
         try:
@@ -139,6 +147,9 @@ class WatchHardware:
             return False
 
     def sync_time(self):
+        if not self.wifi_ssid or not self.wifi_pass:
+            raise ValueError("Chybí CIRCUITPYTHON_WIFI_SSID nebo CIRCUITPYTHON_WIFI_PASSWORD")
+        wifi.radio.enabled = True
         wifi.radio.connect(self.wifi_ssid, self.wifi_pass)
         pool = socketpool.SocketPool(wifi.radio)
         ntp = adafruit_ntp.NTP(pool, server="europe.pool.ntp.org", tz_offset=0)

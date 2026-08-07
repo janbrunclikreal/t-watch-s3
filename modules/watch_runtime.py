@@ -92,7 +92,10 @@ class WatchRuntime:
 
     async def wifi_cas_sync_task(self):
         try:
-            if self.hardware.has_valid_rtc_time():
+            rtc_is_valid = self.hardware.has_valid_rtc_time()
+            force_sync = self.hardware.force_ntp_sync
+
+            if rtc_is_valid and not force_sync:
                 rtc_time = self.hardware.rtc.datetime
                 self.hardware.log(
                     f"[RTC-OK] Čas z RTC je platný ({rtc_time.tm_mday:02d}.{rtc_time.tm_mon:02d}.{rtc_time.tm_year} {rtc_time.tm_hour:02d}:{rtc_time.tm_min:02d}). Wi-Fi přeskočena!"
@@ -100,6 +103,12 @@ class WatchRuntime:
                 self.watchface.update_ntp("N: RTC", 0x03F830)
                 self.state.time_synchronized = True
                 return
+
+            if rtc_is_valid and force_sync:
+                rtc_time = self.hardware.rtc.datetime
+                self.hardware.log(
+                    f"[RTC-FORCE] RTC je platný ({rtc_time.tm_hour:02d}:{rtc_time.tm_min:02d}), ale FORCE_NTP_SYNC je zapnuto. Spouštím Wi-Fi sync."
+                )
         except Exception as err:
             self.hardware.log(f"[RTC-WARN] {err}")
 
