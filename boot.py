@@ -1,18 +1,18 @@
 import storage
 import supervisor
 
-supervisor.runtime.autoreload = False  # Vypne auto-reload při změně souborů (na hodinkách nepotřebuješ)
+print("[BOOT] Spoustim LILYGO T-Watch-S3...")
 
-print("[BOOT] LILYGO T-Watch-S3 starting...")
+supervisor.runtime.autoreload = False
+print("[BOOT] Auto-reload: vypnut.")
 
-# 1. Trvale vypneme simulaci USB flash disku (MSC)
-# Hodinky se už nebudou hlásit jako USB disk.
+# Hodinky se uz nebudou hlasit jako USB flash disk.
 storage.disable_usb_drive()
+print("[BOOT] USB disk (MSC): vypnut.")
 
-# 2. Povolíme internímu Pythonu plný zápis do souborového systému
-# Protože PC už k disku nepřistupuje, Python může zapisovat vždy bez konfliktů.
+# CircuitPython muze zapisovat, protoze USB disk uz nema pristup ke stejnemu ulozisti.
 try:
     storage.remount("/", readonly=False)
-    print("[BOOT] USB disk vypnut. Úložiště odemčeno pro ZÁPIS z Pythonu.")
-except Exception as e:
-    print(f"[BOOT-ERROR] Nelze odemknout úložiště: {e}")
+    print("[BOOT] Uloziste: zapis povolen pro CircuitPython.")
+except Exception as error:
+    print(f"[BOOT-ERROR] Nelze povolit zapis do uloziste: {error}")
