@@ -71,6 +71,8 @@ Korunka vždy vrací uživatele na watchface. Pokud už je watchface aktivní, d
 - CPU je při startu nastavené na fixních `80 MHz`.
 - Jas displeje se běžně používá na `80 %` a při uspání plynule klesá na `0 %`.
 - Displej se uspí po `10 s` neaktivity, pokud neběží Wi‑Fi sync a není připojené USB.
+- V režimu spánku runtime preferuje nízkou spotřebu: CPU se sníží na `40 MHz`, dotyk se aktivně nepolluje a primární probuzení je korunkou.
+- Notifikace přijaté přes BLE ve spánku se ukládají do fronty a zobrazí se po probuzení korunkou.
 - BLE reklama pro ANCS se po `10 s` bez připojení pozastaví a obnoví se další aktivitou uživatele.
 - Historie notifikací v UI drží maximálně `15` položek.
 - Runtime si kvůli paměti drží omezenou množinu již zpracovaných ANCS ID.

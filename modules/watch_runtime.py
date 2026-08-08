@@ -19,6 +19,9 @@ from watch_ui import WatchFaceUI
 class WatchRuntime:
     PMU_ADDRESS = 0x34
     REG_IRQ_STATUS = 0x49
+    CROWN_PRESS_MASK = 0x03
+    CPU_FREQ_ACTIVE_HZ = 80000000
+    CPU_FREQ_SLEEP_HZ = 40000000
 
     def __init__(self):
         self.state = WatchState()
@@ -31,10 +34,11 @@ class WatchRuntime:
         self.notif_app = AppNotifications()
         self.step_db = StepDatabase(self.hardware.DB_FILE, self.hardware.log)
         self.cpu_usage_cache = 0
+        self.pending_notif_count = 0
         self.watchface.show_on(self.hardware.display)
         
         # Nastavení stabilní úsporné frekvence CPU (80 MHz)
-        self.hardware.set_cpu_frequency(80000000)
+        self.hardware.set_cpu_frequency(self.CPU_FREQ_ACTIVE_HZ)
 
     def memory_cleanup(self, reason=""):
         gc.collect()
@@ -47,10 +51,17 @@ class WatchRuntime:
         """Neblokující rozsvícení displeje (připraveno pro 80 % jasu)."""
         self.state.register_activity()
         if not self.state.display_awake:
+            self.hardware.set_cpu_frequency(self.CPU_FREQ_ACTIVE_HZ)
             self.state.display_awake = True
             for brightness in range(0, 81, 20):
                 self.hardware.set_brightness(brightness)
                 await asyncio.sleep(0.01)
+
+            # Po probuzení korunkou stručně upozorníme na notifikace přijaté ve spánku.
+            if self.pending_notif_count > 0:
+                self.hardware.log(f"[ANCS] Doručeno ve spánku: {self.pending_notif_count} notifikací.")
+                self.hardware.play_effect(14)
+                self.pending_notif_count = 0
 
     async def sleep_display_async(self):
         """Neblokující zhasnutí displeje."""
@@ -59,6 +70,10 @@ class WatchRuntime:
                 self.hardware.set_brightness(brightness)
                 await asyncio.sleep(0.01)
             self.state.display_awake = False
+            self.hardware.set_cpu_frequency(self.CPU_FREQ_SLEEP_HZ)
+
+            # Ve spánku zastavíme BLE inzerci, obnoví se další aktivitou (korunka/touch).
+            self.state.ble_pause_advertising = True
 
     def wake_display(self):
         self.state.register_activity()
@@ -217,13 +232,18 @@ class WatchRuntime:
                                             message = getattr(notification, "message", "") or ""
                                             
                                             self.hardware.log(f"[ANCS-NOTIF] {app_id} | {title}: {message}")
-                                            self.hardware.play_effect(14)
-                                            await self.wake_display_async()
                                             
                                             try:
                                                 self.notif_app.add_notification(app_id, f"{title}: {message}")
                                             except Exception:
                                                 pass
+
+                                            # Priorita low-power: ve spánku notifikace jen uložíme,
+                                            # UI/haptika počká až na probuzení korunkou.
+                                            if self.state.display_awake:
+                                                self.hardware.play_effect(14)
+                                            else:
+                                                self.pending_notif_count += 1
                                 except Exception as err:
                                     self.hardware.log(f"[ANCS-ERR] {err}")
                                     await asyncio.sleep(1.0)
@@ -254,7 +274,8 @@ class WatchRuntime:
                 irq_status = self.hardware.read_register(self.PMU_ADDRESS, self.REG_IRQ_STATUS)
                 if irq_status > 0:
                     self.hardware.write_register(self.PMU_ADDRESS, self.REG_IRQ_STATUS, irq_status)
-                    if irq_status in (2, 3):
+                    # Bitová maska je robustnější než porovnání na přesnou hodnotu.
+                    if (irq_status & self.CROWN_PRESS_MASK) != 0:
                         self.hardware.log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
                         self.state.register_activity()
                         
@@ -275,7 +296,7 @@ class WatchRuntime:
             except Exception as err:
                 self.hardware.log(f"[CROWN-ERR] {err}")
             
-            await asyncio.sleep(0.05 if self.state.display_awake else 0.3)
+            await asyncio.sleep(0.05 if self.state.display_awake else 0.2)
 
     async def sprava_napajeni_task(self):
         self.hardware.log("[Task] Správa napájení spuštěna.")
@@ -331,7 +352,8 @@ class WatchRuntime:
             except Exception as err:
                 self.hardware.log(f"[KROKY-ERR] {err}")
             
-            await asyncio.sleep(0.2 if self.state.display_awake else 0.4)
+            # Kroky mají prioritu i ve spánku, proto necháváme kratší interval.
+            await asyncio.sleep(0.2 if self.state.display_awake else 0.25)
 
     async def graficka_smycka_hodin_task(self):
         self.hardware.log("[Task] Grafická smyčka hodin spuštěna.")
@@ -380,11 +402,14 @@ class WatchRuntime:
     async def dotyk_a_gui_task(self):
         self.hardware.log("[Task] Dotyková obsluha spuštěna.")
         while True:
+            if not self.state.display_awake:
+                # V hlubším idle nespouštíme polling dotyku; probuzení zajišťuje korunka.
+                await asyncio.sleep(1.0)
+                continue
+
             try:
                 event = self.touch.get_event()
                 if event:
-                    if not self.state.display_awake:
-                        await self.wake_display_async()
                     self.state.register_activity()
                     event_type, x_pos, y_pos = event[0], event[1], event[2]
 
@@ -420,7 +445,7 @@ class WatchRuntime:
             except Exception as err:
                 self.hardware.log(f"[TOUCH-ERR] {err}")
             
-            await asyncio.sleep(0.04 if self.state.display_awake else 0.2)
+            await asyncio.sleep(0.04)
 
     async def main(self):
         self.hardware.log("Spouštím optimalizovaný CircuitPython OS pro T-Watch-S3...")
