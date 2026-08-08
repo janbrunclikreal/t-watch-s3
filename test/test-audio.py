@@ -19,6 +19,7 @@ except ImportError:
 SAMPLE_RATE = 8000
 TOTAL_SECONDS = 5
 SAMPLE_BYTES = 2
+PCM_AMPLITUDE = 29490
 TEMP_WAV_PATH = "/_audio_diag.wav"
 
 def build_scale_frequencies():
@@ -42,7 +43,7 @@ def generate_pcm_wav_buffer():
             if sample_count >= target_samples:
                 break
             phase = sample_index / SAMPLE_RATE
-            sample_value = int(10000 * math.sin(2 * math.pi * frequency * phase))
+            sample_value = int(PCM_AMPLITUDE * math.sin(2 * math.pi * frequency * phase))
             struct.pack_into("<h", pcm_data, byte_offset, sample_value)
             byte_offset += SAMPLE_BYTES
             sample_count += 1
