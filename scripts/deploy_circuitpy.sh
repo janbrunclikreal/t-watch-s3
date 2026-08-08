@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_DIR="${SOURCE_DIR:-$ROOT_DIR/}"
 SERIAL_PORT="${SERIAL_PORT:-}"
 DRY_RUN="${DRY_RUN:-0}"
+REQUIRE_SERIAL="${REQUIRE_SERIAL:-0}"
+WEBSERIAL_BREAK="${WEBSERIAL_BREAK:-0}"
 
 find_circuitpy_mount() {
   if [[ -n "${CIRCUITPY_MOUNT:-}" ]]; then
@@ -114,6 +116,8 @@ run_rsync() {
     --exclude=LICENSE
     --exclude=test/
     --exclude=settings.toml
+    --exclude=kroky_db.json
+    --exclude=boot_out.txt
     --exclude=scripts/
     --filter=P\ .fseventsd
     --filter=P\ .Trashes
@@ -129,18 +133,33 @@ run_rsync() {
   rsync "${rsync_opts[@]}" "$source_dir" "$target_dir"
 }
 
+manual_break_via_webserial() {
+  echo "INFO: WEBSERIAL_BREAK=1: přeruš běžící program v WebSerial konzoli (Ctrl+C)."
+  echo "INFO: Až uvidíš REPL prompt, potvrď pokračování klávesou Enter."
+  read -r -p "Pokračovat v deploy? [Enter] " _
+}
+
 TARGET_DIR="$(find_circuitpy_mount)"
 
 require_tools
 
-if [[ -z "$SERIAL_PORT" ]]; then
-  SERIAL_PORT="$(auto_detect_serial_port || true)"
-fi
-
-if [[ -n "$SERIAL_PORT" ]]; then
-  interrupt_circuitpython "$SERIAL_PORT"
+if [[ "$WEBSERIAL_BREAK" == "1" ]]; then
+  manual_break_via_webserial
 else
-  echo "WARN: Serial port nebyl nalezen. Pokračuji bez Ctrl+C." >&2
+  if [[ -z "$SERIAL_PORT" ]]; then
+    SERIAL_PORT="$(auto_detect_serial_port || true)"
+  fi
+
+  if [[ -n "$SERIAL_PORT" ]]; then
+    interrupt_circuitpython "$SERIAL_PORT"
+  else
+    if [[ "$REQUIRE_SERIAL" == "1" ]]; then
+      echo "ERROR: Serial port nebyl nalezen a REQUIRE_SERIAL=1." >&2
+      echo "TIP: Přepni USB zařízení do Linuxu a nastav SERIAL_PORT=/dev/ttyACM0 (nebo /dev/ttyUSB0)." >&2
+      exit 1
+    fi
+    echo "INFO: Serial port nebyl nalezen. Pokračuji bez Ctrl+C (Chromebook režim)." >&2
+  fi
 fi
 
 assert_mount_is_writable "$TARGET_DIR"

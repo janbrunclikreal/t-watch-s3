@@ -185,7 +185,7 @@ V repozitáři je připravený skript `scripts/deploy_circuitpy.sh`, který:
 - před synchronizací pošle do serial portu `Ctrl+C` (zastavení běžícího interpretu),
 - ověří, že je mount `CIRCUITPY` zapisovatelný (včetně write testu),
 - nasadí změny přes `rsync`,
-- vynechá `settings.toml`.
+- vynechá `settings.toml`, `kroky_db.json` a `boot_out.txt`.
 
 Spuštění z konzole v rootu repozitáře:
 
@@ -205,12 +205,28 @@ Nejdřív je možné spustit bezpečný náhled změn bez zápisu:
 DRY_RUN=1 ./scripts/deploy_circuitpy.sh
 ```
 
+Vynucení přítomnosti serial portu (strict režim):
+
+```sh
+REQUIRE_SERIAL=1 SERIAL_PORT=/dev/ttyACM0 ./scripts/deploy_circuitpy.sh
+```
+
+WebSerial režim (Chromebook, bez Linux serial portu):
+
+```sh
+WEBSERIAL_BREAK=1 ./scripts/deploy_circuitpy.sh
+```
+
+Skript v tomto režimu počká na potvrzení. Nejprve v otevřené WebSerial konzoli pošli `Ctrl+C` a po návratu do REPL potvrď pokračování Enterem v terminálu.
+
 Poznámka: pokud je filesystém hodinek v read-only režimu, skript skončí chybou a vypíše doporučení, jak postupovat (odpojit/připojit zařízení, zkontrolovat `boot.py`, restartovat hodinky).
 
 Troubleshooting pro Chromebook/Crostini:
 
 - Skript používá `rsync` bez změn owner/group/perms, aby nepadal na USB/CIRCUITPY mountu.
 - Systémové položky jako `.Trashes` nebo `.fseventsd` jsou při `--delete` chráněné a nemažou se.
+- Na Chromebooku se USB zařízení často přepíná mezi Chrome a Linuxem. Když je dostupný disk `CIRCUITPY`, serial port v Linuxu nemusí být vidět. V tom případě skript běží bez `Ctrl+C` (informativní hláška, ne chyba).
+- Pokud používáš WebSerial, doporučený postup je `WEBSERIAL_BREAK=1`, ručně poslat `Ctrl+C` do WebSerial relace a pak potvrdit deploy v terminálu.
 
 ## Ukládání kroků
 
