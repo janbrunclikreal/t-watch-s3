@@ -18,14 +18,15 @@ except ImportError:
 
 SAMPLE_RATE = 8000
 TOTAL_SECONDS = 5
-NOTE_SECONDS = 0.5
 TEMP_WAV_PATH = "/_audio_diag.wav"
+SAMPLE_BYTES = 2
 
-# T-Watch S3 has no onboard speaker, DAC, or amplifier. Set these to board
-# pin names only when an external I2S DAC/amplifier is connected.
-EXTERNAL_I2S_BCLK_PIN = None
-EXTERNAL_I2S_WCLK_PIN = None
-EXTERNAL_I2S_DOUT_PIN = None
+# T-Watch S3 onboard MAX98357A: BCLK=GPIO48, WCLK=GPIO15, DOUT=GPIO46.
+I2S_PIN_NAMES = (
+    ("I2S_BCLK", "IO48", "GPIO48", "D48"),
+    ("I2S_WCLK", "IO15", "GPIO15", "D15"),
+    ("I2S_DOUT", "IO46", "GPIO46", "D46"),
+)
 
 
 def build_scale_frequencies():
@@ -33,24 +34,31 @@ def build_scale_frequencies():
     return base_scale + list(reversed(base_scale[:-1]))
 
 
-def generate_wav_bytes():
+def generate_pcm_bytes():
     frequencies = build_scale_frequencies()
-    samples_per_note = int(SAMPLE_RATE * NOTE_SECONDS)
     target_samples = int(SAMPLE_RATE * TOTAL_SECONDS)
+    samples_per_note = target_samples // len(frequencies)
 
-    pcm = bytearray()
+    pcm = bytearray(target_samples * SAMPLE_BYTES)
+    byte_offset = 0
     note_index = 0
-    while len(pcm) < target_samples:
+    sample_count = 0
+    while sample_count < target_samples:
         frequency = frequencies[note_index % len(frequencies)]
         for sample_index in range(samples_per_note):
-            if len(pcm) >= target_samples:
+            if sample_count >= target_samples:
                 break
             phase = sample_index / SAMPLE_RATE
-            sample_value = 128 + int(58 * math.sin(2 * math.pi * frequency * phase))
-            pcm.append(max(0, min(255, sample_value)))
+            sample_value = int(12000 * math.sin(2 * math.pi * frequency * phase))
+            struct.pack_into("<h", pcm, byte_offset, sample_value)
+            byte_offset += SAMPLE_BYTES
+            sample_count += 1
         note_index += 1
 
-    data_size = len(pcm)
+    return pcm
+
+
+def create_wav_header(data_size):
     riff_size = 36 + data_size
     header = struct.pack(
         "<4sI4s4sIHHIIHH4sI",
@@ -62,37 +70,36 @@ def generate_wav_bytes():
         1,
         1,
         SAMPLE_RATE,
-        SAMPLE_RATE,
-        1,
-        8,
+        SAMPLE_RATE * SAMPLE_BYTES,
+        SAMPLE_BYTES,
+        SAMPLE_BYTES * 8,
         b"data",
         data_size,
     )
-    return header + pcm
+    return header
+
+
+def resolve_i2s_pins():
+    pins = []
+    for aliases in I2S_PIN_NAMES:
+        pin = None
+        for name in aliases:
+            if hasattr(board, name):
+                pin = getattr(board, name)
+                break
+        if pin is None:
+            return None
+        pins.append(pin)
+    return pins
 
 
 def create_audio_output():
-    if audiobusio is not None and all(
-        hasattr(board, name) for name in ("I2S_BCLK", "I2S_WCLK", "I2S_DOUT")
-    ):
+    i2s_pins = resolve_i2s_pins()
+    if audiobusio is not None and i2s_pins is not None:
         try:
-            return audiobusio.I2SOut(board.I2S_BCLK, board.I2S_WCLK, board.I2S_DOUT), "i2s"
+            return audiobusio.I2SOut(*i2s_pins), "MAX98357A I2S"
         except Exception as exc:
             print("[WARN] I2SOut selhal:", exc)
-
-    configured_pins = (
-        EXTERNAL_I2S_BCLK_PIN,
-        EXTERNAL_I2S_WCLK_PIN,
-        EXTERNAL_I2S_DOUT_PIN,
-    )
-    if audiobusio is not None and all(configured_pins):
-        try:
-            bclk_pin, wclk_pin, dout_pin = (
-                getattr(board, pin_name) for pin_name in configured_pins
-            )
-            return audiobusio.I2SOut(bclk_pin, wclk_pin, dout_pin), "external-i2s"
-        except Exception as exc:
-            print("[WARN] Externí I2SOut selhal:", exc)
 
     return None, None
 
@@ -124,19 +131,22 @@ def main():
         print("\n[1/4] Inicializuji audio výstup...")
         audio_out, backend = create_audio_output()
         if audio_out is None:
-            print("[INFO] T-Watch S3 nemá vestavěný audio výstup.")
-            print("[INFO] Pro přehrání připoj externí I2S DAC/zesilovač a nastav piny nahoře.")
+            print("[ERR] Nelze otevřít I2S MAX98357A (GPIO48, GPIO15, GPIO46).")
+            print("[INFO] Zkontroluj, zda firmware CircuitPython zpřístupňuje IO48, IO15 a IO46.")
             return
         print(f"[OK] Audio výstup inicializován ({backend}).")
 
         print("\n[2/4] Generuji 5s tónovou stupnici do paměti...")
-        wav_data = generate_wav_bytes()
-        print(f"[OK] Vygenerováno {len(wav_data)} bajtů WAV dat v RAM.")
+        pcm_data = generate_pcm_bytes()
+        print(f"[OK] Vygenerováno {len(pcm_data)} bajtů PCM dat v RAM/PSRAM.")
 
         print("\n[3/4] Zápis dočasného souboru a přehrání...")
         try:
             with open(wav_path, "wb") as wav_file:
-                wav_file.write(wav_data)
+                wav_file.write(create_wav_header(len(pcm_data)))
+                wav_file.write(pcm_data)
+            pcm_data = None
+            gc.collect()
 
             if audiocore is None:
                 print("[ERR] Chybí audiocore, soubor nelze přehrát.")
