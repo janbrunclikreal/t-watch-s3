@@ -178,6 +178,40 @@ RTC je považované za platné, pokud je `tm_year >= 2026`.
 
 To je vhodné pro průběžné ukládání kroků, ale komplikuje další kopírování souborů přes USB.
 
+### Automatický deploy skript (Chromebook + CIRCUITPY)
+
+V repozitáři je připravený skript `scripts/deploy_circuitpy.sh`, který:
+
+- před synchronizací pošle do serial portu `Ctrl+C` (zastavení běžícího interpretu),
+- ověří, že je mount `CIRCUITPY` zapisovatelný (včetně write testu),
+- nasadí změny přes `rsync`,
+- vynechá `settings.toml`.
+
+Spuštění z konzole v rootu repozitáře:
+
+```sh
+./scripts/deploy_circuitpy.sh
+```
+
+Volitelně lze explicitně nastavit mount a serial port:
+
+```sh
+CIRCUITPY_MOUNT=/mnt/chromeos/removable/CIRCUITPY SERIAL_PORT=/dev/ttyACM0 ./scripts/deploy_circuitpy.sh
+```
+
+Nejdřív je možné spustit bezpečný náhled změn bez zápisu:
+
+```sh
+DRY_RUN=1 ./scripts/deploy_circuitpy.sh
+```
+
+Poznámka: pokud je filesystém hodinek v read-only režimu, skript skončí chybou a vypíše doporučení, jak postupovat (odpojit/připojit zařízení, zkontrolovat `boot.py`, restartovat hodinky).
+
+Troubleshooting pro Chromebook/Crostini:
+
+- Skript používá `rsync` bez změn owner/group/perms, aby nepadal na USB/CIRCUITPY mountu.
+- Systémové položky jako `.Trashes` nebo `.fseventsd` jsou při `--delete` chráněné a nemažou se.
+
 ## Ukládání kroků
 
 - Databáze kroků je v souboru `/kroky_db.json`.
