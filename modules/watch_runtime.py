@@ -22,6 +22,8 @@ class WatchRuntime:
     CROWN_PRESS_MASK = 0x03
     CPU_FREQ_ACTIVE_HZ = 80000000
     CPU_FREQ_SLEEP_HZ = 40000000
+    CROWN_DEBOUNCE_SEC = 0.8
+    CROWN_WAKE_GUARD_SEC = 1.5
 
     def __init__(self):
         self.state = WatchState()
@@ -35,6 +37,8 @@ class WatchRuntime:
         self.step_db = StepDatabase(self.hardware.DB_FILE, self.hardware.log)
         self.cpu_usage_cache = 0
         self.pending_notif_count = 0
+        self.last_crown_event_at = 0.0
+        self.crown_wake_guard_until = 0.0
         self.watchface.show_on(self.hardware.display)
         
         # Nastavení stabilní úsporné frekvence CPU (80 MHz)
@@ -277,6 +281,13 @@ class WatchRuntime:
                     # Bitová maska je robustnější než porovnání na přesnou hodnotu.
                     if (irq_status & self.CROWN_PRESS_MASK) != 0:
                         self.hardware.log(f"[HARDWARE-OK] Korunka stisknuta! Status: {irq_status}")
+                        now = time.monotonic()
+
+                        # Potlačíme opakované IRQ pulzy jednoho fyzického stisku.
+                        if (now - self.last_crown_event_at) < self.CROWN_DEBOUNCE_SEC:
+                            continue
+                        self.last_crown_event_at = now
+
                         self.state.register_activity()
                         
                         # STISK KORUNKY OPĚT OBNOVÍ HLEDÁNÍ TELEFONU (10 S)
@@ -285,7 +296,11 @@ class WatchRuntime:
                         if not self.state.display_awake:
                             await self.wake_display_async()
                             self.hardware.play_effect(1)
+                            # Po probuzení krátce blokujeme okamžité opětovné uspání.
+                            self.crown_wake_guard_until = now + self.CROWN_WAKE_GUARD_SEC
                         else:
+                            if now < self.crown_wake_guard_until:
+                                continue
                             if self.state.current_state != self.state.STATE_WATCHFACE:
                                 self.show_watchface("Návrat na Watchface")
                                 self.hardware.log("[AKCE] Návrat na Ciferník")

@@ -229,7 +229,10 @@ class WatchHardware:
     def read_register(self, address, register):
         """Bezpečné čtení I2C s ošetřením výjimek."""
         try:
+            deadline = time.monotonic() + 0.05
             while not self.i2c.try_lock():
+                if time.monotonic() > deadline:
+                    return 0
                 time.sleep(0.001)
             try:
                 buffer = bytearray(1)
@@ -244,7 +247,10 @@ class WatchHardware:
     def write_register(self, address, register, value):
         """Bezpečný zápis na I2C s ošetřením výjimek."""
         try:
+            deadline = time.monotonic() + 0.05
             while not self.i2c.try_lock():
+                if time.monotonic() > deadline:
+                    return
                 time.sleep(0.001)
             try:
                 self.i2c.writeto(address, bytes([register, value]))
