@@ -16,16 +16,16 @@ try:
 except ImportError:
     audiocore = None
 
-try:
-    import audiopwmio
-except ImportError:
-    audiopwmio = None
-
-
 SAMPLE_RATE = 8000
 TOTAL_SECONDS = 5
 NOTE_SECONDS = 0.5
 TEMP_WAV_PATH = "/_audio_diag.wav"
+
+# T-Watch S3 has no onboard speaker, DAC, or amplifier. Set these to board
+# pin names only when an external I2S DAC/amplifier is connected.
+EXTERNAL_I2S_BCLK_PIN = None
+EXTERNAL_I2S_WCLK_PIN = None
+EXTERNAL_I2S_DOUT_PIN = None
 
 
 def build_scale_frequencies():
@@ -80,13 +80,19 @@ def create_audio_output():
         except Exception as exc:
             print("[WARN] I2SOut selhal:", exc)
 
-    if audiopwmio is not None:
-        for pin_name in ("SPEAKER", "BUZZER", "A0"):
-            if hasattr(board, pin_name):
-                try:
-                    return audiopwmio.PWMAudioOut(getattr(board, pin_name)), f"pwm:{pin_name}"
-                except Exception as exc:
-                    print(f"[WARN] PWMAudioOut přes {pin_name} selhal:", exc)
+    configured_pins = (
+        EXTERNAL_I2S_BCLK_PIN,
+        EXTERNAL_I2S_WCLK_PIN,
+        EXTERNAL_I2S_DOUT_PIN,
+    )
+    if audiobusio is not None and all(configured_pins):
+        try:
+            bclk_pin, wclk_pin, dout_pin = (
+                getattr(board, pin_name) for pin_name in configured_pins
+            )
+            return audiobusio.I2SOut(bclk_pin, wclk_pin, dout_pin), "external-i2s"
+        except Exception as exc:
+            print("[WARN] Externí I2SOut selhal:", exc)
 
     return None, None
 
@@ -118,7 +124,8 @@ def main():
         print("\n[1/4] Inicializuji audio výstup...")
         audio_out, backend = create_audio_output()
         if audio_out is None:
-            print("[ERR] Nepodařilo se najít podporovaný audio výstup na této desce.")
+            print("[INFO] T-Watch S3 nemá vestavěný audio výstup.")
+            print("[INFO] Pro přehrání připoj externí I2S DAC/zesilovač a nastav piny nahoře.")
             return
         print(f"[OK] Audio výstup inicializován ({backend}).")
 
